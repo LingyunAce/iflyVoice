@@ -3,46 +3,94 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>&#20013;&#25991;&#35821;&#38899;&#35782;&#21035;&#31995;&#32479;</title>
+    <title>语音 AI 助手</title>
     <link rel="stylesheet" href="style.css">
-    <style>
-        #iflytekConfig { display: none; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; text-align: left; }
-        .api-selector { display: flex; gap: 20px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
-        .api-selector label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; color: #555; padding: 8px 16px; border-radius: 20px; border: 2px solid #e0e0e0; transition: all 0.25s; user-select: none; }
-        .api-selector label:has(input:checked) { border-color: #667eea; background: rgba(102,126,234,0.08); color: #667eea; font-weight: 600; }
-        .api-selector input[type=radio] { accent-color: #667eea; width: 16px; height: 16px; }
-        .result-text { color: #2c3e50; line-height: 1.7; word-break: break-all; }
-        .result-box.success { border-color: #667eea; background: #f0f3ff; }
-        .info-tip { margin-top: 20px; padding: 12px 16px; background: #e8f4f8; border-radius: 10px; color: #5a7a8a; font-size: 13px; line-height: 1.6; }
-    </style>
 </head>
 <body>
-    <div class="container">
-        <h1>&#127908; &#20013;&#25991;&#35821;&#38899;&#35782;&#21035;</h1>
-        <div class="api-selector">
-            <label><input type="radio" name="apiType" value="browser" checked> &#27983;&#35272;&#22120;&#20869;&#32622; API</label>
-            <label><input type="radio" name="apiType" value="iflytek"> &#35759;&#39134;&#35821;&#38899;&#35782;&#21035; API</label>
+    <!-- 左侧：语音输入面板 -->
+    <div class="panel panel-left">
+        <div class="panel-header">
+            <span class="panel-icon">&#127908;</span>
+            <span class="panel-title">语音输入</span>
         </div>
-        <div id="iflytekConfig"></div>
-        <div id="status" class="status">&#20934;&#22791;&#23601;&#32508;</div>
+
+        <!-- API 类型选择 -->
+        <div class="api-selector">
+            <label><input type="radio" name="apiType" value="browser" checked> 浏览器 API</label>
+            <label><input type="radio" name="apiType" value="iflytek"> 讯飞 API</label>
+        </div>
+
+        <!-- 讯飞配置区域（含动态注入的麦克风选择器） -->
+        <div id="iflytekConfig" class="iflytek-config"></div>
+
+        <!-- 状态 -->
+        <div id="status" class="status">准备就绪</div>
+
+        <!-- 录音按钮 -->
         <div class="button-container">
             <button id="recordBtn" class="record-btn">
                 <div class="mic-icon">&#127908;</div>
-                <div class="btn-text">&#24320;&#22987;&#24405;&#38899;</div>
+                <div class="btn-text">开始录音</div>
             </button>
         </div>
+
+        <!-- 识别结果 + 发送区 -->
         <div class="result-container">
-            <h3>&#35782;&#21035;&#32467;&#26524;</h3>
-            <div id="result" class="result-box"><div class="placeholder">&#28857;&#20987;&#25353;&#38062;&#24320;&#22987;&#24405;&#38899;&#65292;&#35782;&#21035;&#32467;&#26524;&#23558;&#26174;&#31034;&#22312;&#36825;&#37324;...</div></div>
+            <div class="result-header">
+                <h3>识别结果</h3>
+                <button id="sendToAiBtn" class="send-btn" disabled>发送给 AI &#10148;</button>
+            </div>
+            <div id="result" class="result-box">
+                <div class="placeholder">点击按钮开始录音，识别结果将显示在这里...</div>
+            </div>
         </div>
-        <div class="info-tip">&#39318;&#27425;&#20351;&#29992;&#38656;&#25480;&#26435;&#40614;&#20943;&#39118;&#26435;&#38480; | &#25512;&#33616;&#20351;&#29992; Chrome / Edge &#27983;&#35272;&#22120;</div>
-        <div class="debug-container">
-            <h3>&#35782;&#21035;&#26085;&#24535;</h3>
+
+        <!-- 调试日志（折叠） -->
+        <details class="debug-details">
+            <summary>&#128269; 识别日志</summary>
             <pre id="debugLog" class="debug-box"></pre>
+        </details>
+    </div>
+
+    <!-- 右侧：AI 对话面板 -->
+    <div class="panel panel-right">
+        <div class="panel-header">
+            <span class="panel-icon">&#129504;</span>
+            <span class="panel-title">AI 助手</span>
+            <div class="panel-actions">
+                <!-- 模型选择 -->
+                <select id="modelSelector" class="model-selector">
+                    <option value="qwen3:4b">qwen3:4b</option>
+                    <option value="deepseek-r1:7b">deepseek-r1:7b</option>
+                </select>
+                <button id="clearChatBtn" class="clear-btn" title="清空对话">&#128465;</button>
+            </div>
+        </div>
+
+        <!-- 对话消息区 -->
+        <div id="chatMessages" class="chat-messages">
+            <div class="chat-welcome">
+                <div class="welcome-icon">&#129504;</div>
+                <p>你好！我是本地 AI 助手（qwen3:4b）</p>
+                <p class="welcome-sub">通过左侧语音识别或下方输入框与我对话</p>
+            </div>
+        </div>
+
+        <!-- 输入区 -->
+        <div class="chat-input-area">
+            <textarea id="chatInput" class="chat-input" placeholder="输入消息，或使用左侧语音识别后点击「发送给 AI」..." rows="3"></textarea>
+            <div class="chat-input-actions">
+                <span id="aiStatus" class="ai-status"></span>
+                <button id="stopGenBtn" class="stop-btn" style="display:none">&#9632; 停止</button>
+                <button id="chatSendBtn" class="chat-send-btn">发送 &#9654;</button>
+            </div>
         </div>
     </div>
+
+    <!-- 依赖脚本 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <script src="iflytek-api.js"></script>
+    <script src="ollama-api.js"></script>
     <script src="main.js"></script>
 </body>
 </html>
