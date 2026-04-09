@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>讯飞API测试 - 中文语音识别</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .test-container {
+            background: #f8f9fa;
+            border: 2px solid #dee2e6;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            text-align: left;
+        }
+        
+        .config-status {
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 15px;
+            font-weight: bold;
+        }
+        
+        .config-status.ready {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .config-status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .config-status.warning {
+            background: #fff3cd;
+            color: #856404;
+            border: 1px solid #ffeaa7;
+        }
+        
+        .connection-test {
+            background: #e7f3ff;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 15px;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-indicator.connected {
+            background: #28a745;
+        }
+        
+        .status-indicator.disconnected {
+            background: #dc3545;
+        }
+        
+        .status-indicator.connecting {
+            background: #ffc107;
+            animation: pulse 1s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>讯飞API测试 - 中文语音识别</h1>
+        <button onclick="location.reload()" style="position: absolute; right: 20px; top: 20px; padding: 8px 16px; background: #4CAF50; color: white; border: none; border-radius: 5px; cursor: pointer;">刷新页面</button>
+        
+        <div class="test-container">
+            <h3>📋 API配置检查</h3>
+            <div id="configStatus" class="config-status">检查中...</div>
+            
+            <div id="configDetails" style="font-size: 14px; line-height: 1.8;">
+                <div><strong>APPID:</strong> <span id="appIdStatus">-</span></div>
+                <div><strong>APIKey:</strong> <span id="apiKeyStatus">-</span></div>
+                <div><strong>APISecret:</strong> <span id="apiSecretStatus">-</span></div>
+            </div>
+            
+            <div class="connection-test">
+                <h4>🔌 WebSocket连接测试</h4>
+                <div id="connectionStatus">
+                    <span class="status-indicator disconnected"></span>
+                    <span id="connectionText">未连接</span>
+                </div>
+                <button id="testConnectionBtn" class="record-btn" style="width: 200px; height: 50px; margin-top: 10px;">
+                    测试连接
+                </button>
+                <div id="connectionLog" style="margin-top: 10px; font-size: 13px; color: #666;"></div>
+            </div>
+        </div>
+        
+        <div class="status" id="status">准备就绪</div>
+        
+        <div class="button-container">
+            <button id="recordBtn" class="record-btn" disabled>
+                <div class="mic-icon">🎤</div>
+                <div class="btn-text">开始录音</div>
+            </button>
+        </div>
+        
+        <div class="result-container">
+            <h3>识别结果：</h3>
+            <div id="result" class="result-box">
+                <div class="placeholder">等待录音...</div>
+            </div>
+        </div>
+        
+        <div class="info">
+            <p>提示：请先测试连接，连接成功后即可开始录音测试</p>
+        </div>
+        
+        <div class="debug-container">
+            <h3>测试日志：</h3>
+            <div id="debugLog" class="debug-box"></div>
+        </div>
+    </div>
+    
+    <!-- CryptoJS库 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    
+    <!-- 讯飞API集成 -->
+    <script src="iflytek-api.js"></script>
+    
+    <!-- 测试脚本 -->
+    <script>
+        class IflytekTest {
+            constructor() {
+                this.recognizer = null;
+                this.debugLogs = [];
+                this.init();
+            }
+            
+            init() {
+                this.checkConfig();
+                this.bindEvents();
+            }
+            
+            checkConfig() {
+                const config = IFLYTEK_CONFIG;
+                const statusEl = document.getElementById('configStatus');
+                const appIdEl = document.getElementById('appIdStatus');
+                const apiKeyEl = document.getElementById('apiKeyStatus');
+                const apiSecretEl = document.getElementById('apiSecretStatus');
+                
+                let hasError = false;
+                let hasWarning = false;
+                
+                // 检查APPID
+                if (config.APPID && config.APPID !== 'YOUR_APPID_HERE') {
+                    appIdEl.innerHTML = `<span style="color: #28a745;">✓ ${config.APPID.substring(0, 8)}...</span>`;
+                } else {
+                    appIdEl.innerHTML = `<span style="color: #dc3545;">✗ 未设置</span>`;
+                    hasError = true;
+                }
+                
+                // 检查APIKey
+                if (config.APIKey && config.APIKey !== 'YOUR_API_KEY_HERE') {
+                    apiKeyEl.innerHTML = `<span style="color: #28a745;">✓ ${config.APIKey.substring(0, 8)}...</span>`;
+                } else {
+                    apiKeyEl.innerHTML = `<span style="color: #dc3545;">✗ 未设置</span>`;
+                    hasError = true;
+                }
+                
+                // 检查APISecret
+                if (config.APISecret && config.APISecret !== 'YOUR_API_SECRET_HERE') {
+                    apiSecretEl.innerHTML = `<span style="color: #28a745;">✓ ${config.APISecret.substring(0, 8)}...</span>`;
+                } else {
+                    apiSecretEl.innerHTML = `<span style="color: #dc3545;">✗ 未设置</span>`;
+                    hasError = true;
+                }
+                
+                if (hasError) {
+                    statusEl.textContent = '配置错误：请检查API密钥';
+                    statusEl.className = 'config-status error';
+                } else {
+                    statusEl.textContent = '配置已就绪，可以测试连接';
+                    statusEl.className = 'config-status ready';
+                    document.getElementById('recordBtn').disabled = false;
+                }
+            }
+            
+            bindEvents() {
+                document.getElementById('testConnectionBtn').addEventListener('click', () => {
+                    this.testConnection();
+                });
+                
+                document.getElementById('recordBtn').addEventListener('click', async () => {
+                    await this.toggleRecording();
+                });
+            }
+            
+            async testConnection() {
+                const btn = document.getElementById('testConnectionBtn');
+                const statusIndicator = document.querySelector('#connectionStatus .status-indicator');
+                const statusText = document.getElementById('connectionText');
+                const logEl = document.getElementById('connectionLog');
+                
+                btn.disabled = true;
+                statusIndicator.className = 'status-indicator connecting';
+                statusText.textContent = '连接中...';
+                logEl.textContent = '';
+                
+                try {
+                    // 尝试生成WebSocket URL
+                    this.addDebugLog('正在生成认证URL...');
+                    const url = getWebSocketUrl();
+                    this.addDebugLog(`认证URL生成成功: ${url.substring(0, 100)}...`);
+                    
+                    // 尝试建立WebSocket连接
+                    this.addDebugLog('正在建立WebSocket连接...');
+                    const ws = new WebSocket(url);
+                    
+                    ws.onopen = () => {
+                        this.addDebugLog('WebSocket连接已打开');
+                        statusIndicator.className = 'status-indicator connected';
+                        statusText.textContent = '已连接';
+                        logEl.innerHTML = '<span style="color: #28a745;">✓ 连接成功！</span>';
+                        ws.close();
+                    };
+                    
+                    ws.onerror = (error) => {
+                        this.addDebugLog(`WebSocket错误: ${error}`);
+                        statusIndicator.className = 'status-indicator disconnected';
+                        statusText.textContent = '连接失败';
+                        logEl.innerHTML = '<span style="color: #dc3545;">✗ 连接失败，请检查API密钥和网络</span>';
+                    };
+                    
+                    ws.onclose = () => {
+                        this.addDebugLog('WebSocket连接已关闭');
+                        btn.disabled = false;
+                    };
+                    
+                    // 超时处理
+                    setTimeout(() => {
+                        if (ws.readyState !== WebSocket.OPEN) {
+                            ws.close();
+                            if (statusText.textContent === '连接中...') {
+                                statusIndicator.className = 'status-indicator disconnected';
+                                statusText.textContent = '连接超时';
+                                logEl.innerHTML = '<span style="color: #dc3545;">✗ 连接超时，请检查网络</span>';
+                            }
+                        }
+                    }, 10000);
+                    
+                } catch (error) {
+                    this.addDebugLog(`连接测试失败: ${error.message}`);
+                    statusIndicator.className = 'status-indicator disconnected';
+                    statusText.textContent = '连接失败';
+                    logEl.innerHTML = `<span style="color: #dc3545;">✗ ${error.message}</span>`;
+                    btn.disabled = false;
+                }
+            }
+            
+            async toggleRecording() {
+                const btn = document.getElementById('recordBtn');
+                const btnText = btn.querySelector('.btn-text');
+                
+                if (this.recognizer && this.recognizer.isRecording) {
+                    // 停止录音
+                    this.addDebugLog('停止录音...');
+                    btn.disabled = true;
+                    btnText.textContent = '停止中...';
+                    
+                    try {
+                        const finalResult = this.recognizer.stop();
+                        this.addDebugLog(`录音已停止，最终识别结果: ${finalResult}`);
+                        
+                        document.getElementById('result').innerHTML = 
+                            `<div class="result-text">${finalResult || '未识别到内容'}</div>`;
+                        document.getElementById('result').classList.add('success');
+                        
+                        btn.disabled = false;
+                        btnText.textContent = '开始录音';
+                        document.getElementById('status').textContent = '准备就绪';
+                        
+                    } catch (error) {
+                        this.addDebugLog(`停止录音失败: ${error.message}`);
+                        btn.disabled = false;
+                    }
+                    
+                } else {
+                    // 开始录音
+                    this.addDebugLog('开始初始化讯飞识别器...');
+                    btn.disabled = true;
+                    btnText.textContent = '初始化中...';
+                    document.getElementById('status').textContent = '正在初始化...';
+                    
+                    try {
+                        this.recognizer = new window.IflytekSpeechRecognizer({
+                            appId: IFLYTEK_CONFIG.APPID,
+                            apiKey: IFLYTEK_CONFIG.APIKey,
+                            apiSecret: IFLYTEK_CONFIG.APISecret,
+                            onResult: (result) => {
+                                this.addDebugLog(`识别结果: ${result.text} ${result.isFinal ? '(最终)' : '(临时)'}`);
+                                
+                                document.getElementById('result').innerHTML = 
+                                    `<div class="result-text">${result.text}</div>`;
+                                document.getElementById('result').classList.add('success');
+                            },
+                            onError: (error) => {
+                                this.addDebugLog(`识别错误: ${error.message}`);
+                                alert(`识别错误: ${error.message}`);
+                            },
+                            onStatusChange: (status) => {
+                                this.addDebugLog(`状态变化: ${status}`);
+                            }
+                        });
+                        
+                        // 绑定调试日志
+                        this.recognizer.addDebugLog = (msg) => {
+                            this.addDebugLog(`[讯飞] ${msg}`);
+                        };
+                        
+                        this.addDebugLog('讯飞识别器创建成功，正在启动...');
+                        await this.recognizer.start();
+                        
+                        this.addDebugLog('录音已开始');
+                        btn.disabled = false;
+                        btnText.textContent = '停止录音';
+                        document.getElementById('status').textContent = '正在录音...';
+                        
+                        document.getElementById('result').innerHTML = '<div class="placeholder">等待识别结果...</div>';
+                        document.getElementById('result').classList.remove('success');
+                        
+                    } catch (error) {
+                        this.addDebugLog(`启动失败: ${error.message}`);
+                        alert(`启动失败: ${error.message}`);
+                        btn.disabled = false;
+                        btnText.textContent = '开始录音';
+                    }
+                }
+            }
+            
+            addDebugLog(message) {
+                const timestamp = new Date().toLocaleTimeString();
+                const logEntry = `[${timestamp}] ${message}`;
+                
+                this.debugLogs.push(logEntry);
+                
+                if (this.debugLogs.length > 100) {
+                    this.debugLogs = this.debugLogs.slice(-100);
+                }
+                
+                document.getElementById('debugLog').textContent = this.debugLogs.join('\n');
+                document.getElementById('debugLog').scrollTop = document.getElementById('debugLog').scrollHeight;
+                
+                console.log(logEntry);
+            }
+        }
+        
+        // 初始化测试
+        document.addEventListener('DOMContentLoaded', () => {
+            new IflytekTest();
+        });
+    </script>
+</body>
+</html>

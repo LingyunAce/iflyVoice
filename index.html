@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>&#20013;&#25991;&#35821;&#38899;&#35782;&#21035;&#31995;&#32479;</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        #iflytekConfig { display: none; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 16px 20px; margin-bottom: 20px; text-align: left; }
+        .api-selector { display: flex; gap: 20px; justify-content: center; margin-bottom: 20px; flex-wrap: wrap; }
+        .api-selector label { display: flex; align-items: center; gap: 8px; cursor: pointer; font-size: 14px; color: #555; padding: 8px 16px; border-radius: 20px; border: 2px solid #e0e0e0; transition: all 0.25s; user-select: none; }
+        .api-selector label:has(input:checked) { border-color: #667eea; background: rgba(102,126,234,0.08); color: #667eea; font-weight: 600; }
+        .api-selector input[type=radio] { accent-color: #667eea; width: 16px; height: 16px; }
+        .result-text { color: #2c3e50; line-height: 1.7; word-break: break-all; }
+        .result-box.success { border-color: #667eea; background: #f0f3ff; }
+        .info-tip { margin-top: 20px; padding: 12px 16px; background: #e8f4f8; border-radius: 10px; color: #5a7a8a; font-size: 13px; line-height: 1.6; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>&#127908; &#20013;&#25991;&#35821;&#38899;&#35782;&#21035;</h1>
+        <div class="api-selector">
+            <label><input type="radio" name="apiType" value="browser" checked> &#27983;&#35272;&#22120;&#20869;&#32622; API</label>
+            <label><input type="radio" name="apiType" value="iflytek"> &#35759;&#39134;&#35821;&#38899;&#35782;&#21035; API</label>
+        </div>
+        <div id="iflytekConfig"></div>
+        <div id="status" class="status">&#20934;&#22791;&#23601;&#32508;</div>
+        <div class="button-container">
+            <button id="recordBtn" class="record-btn">
+                <div class="mic-icon">&#127908;</div>
+                <div class="btn-text">&#24320;&#22987;&#24405;&#38899;</div>
+            </button>
+        </div>
+        <div class="result-container">
+            <h3>&#35782;&#21035;&#32467;&#26524;</h3>
+            <div id="result" class="result-box"><div class="placeholder">&#28857;&#20987;&#25353;&#38062;&#24320;&#22987;&#24405;&#38899;&#65292;&#35782;&#21035;&#32467;&#26524;&#23558;&#26174;&#31034;&#22312;&#36825;&#37324;...</div></div>
+        </div>
+        <div class="info-tip">&#39318;&#27425;&#20351;&#29992;&#38656;&#25480;&#26435;&#40614;&#20943;&#39118;&#26435;&#38480; | &#25512;&#33616;&#20351;&#29992; Chrome / Edge &#27983;&#35272;&#22120;</div>
+        <div class="debug-container">
+            <h3>&#35782;&#21035;&#26085;&#24535;</h3>
+            <pre id="debugLog" class="debug-box"></pre>
+        </div>
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script src="iflytek-api.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>
