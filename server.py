@@ -20,6 +20,15 @@ OLLAMA_PORT = 11434
 LISTEN_PORT = 18766
 STATIC_DIR = os.path.dirname(os.path.abspath(__file__)) or "."
 
+# ── 火山引擎（豆包）云端模型配置 ──
+VOLCENGINE_CONFIG = {
+    "api_base": "https://ark.cn-beijing.volces.com/api/v3",  # 火山引擎 OpenAI 兼容端点
+    "api_key": "dee5eff8-f907-442a-aad4-7caf1f684740",
+    # coding-plan 对应的模型 endpoint ID（用户需要在火山引擎控制台确认）
+    # 格式：ep-xxxxxxxxx 或直接用模型名
+    "default_model": "doubao-1-5-pro-32k-250115",
+}
+
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """每个请求一个线程，互不阻塞"""
@@ -46,6 +55,8 @@ class Handler(BaseHTTPRequestHandler):
             self._proxy("GET")
         elif self.path.startswith("/i2c/"):
             self._handle_i2c()
+        elif self.path.startswith("/cloud/"):
+            self._proxy_cloud("GET")
         else:
             self._serve_static()
 
@@ -54,6 +65,8 @@ class Handler(BaseHTTPRequestHandler):
             self._proxy("POST")
         elif self.path.startswith("/i2c/"):
             self._handle_i2c()
+        elif self.path.startswith("/cloud/"):
+            self._proxy_cloud("POST")
         else:
             self.send_error(404)
 
@@ -267,6 +280,87 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(504, {"success": False, "error": "Command execution timed out (30s)"})
         except Exception as e:
             self._send_json(500, {"success": False, "error": str(e)})
+
+    # ── 火山引擎（云端模型）OpenAI 兼容代理 ──
+    def _proxy_cloud(self, method):
+        """将 /cloud/* 请求转发到火山引擎 OpenAI 兼容 API（支持 SSE 流式）"""
+        target_path = self.path.replace("/cloud/", "/", 1)
+
+        url = f"{VOLCENGINE_CONFIG['api_base']}{target_path}"
+
+        # Read POST body
+        body = None
+        if method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl > 0:
+                try:
+                    body = self.rfile.read(cl)
+                except Exception as e:
+                    self._send_json(400, {"error": {"message": f"Read error: {e}"}})
+                    return
+
+        try:
+            import urllib.request
+            import ssl
+
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method=method,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {VOLCENGINE_CONFIG['api_key']}",
+                    # 禁用内容编码，让服务端保持 chunked / stream 原样返回
+                    "Accept-Encoding": "identity",
+                },
+            )
+
+            ctx = ssl.create_default_context()
+            resp = urllib.request.urlopen(req, timeout=120, context=ctx)
+            resp_status = resp.status
+            content_type = resp.headers.get("Content-Type", "application/json")
+
+            self.send_response(resp_status)
+            self.send_header("Content-Type", content_type)
+            self._cors_headers()
+            # 流式响应不发送 Content-Length，改用 chunked transfer
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+
+            # 分块读取并实时转发（支持 SSE 流式）
+            while True:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                try:
+                    # HTTP/1.0 chunked encoding
+                    chunk_hex = format(len(chunk), 'x')
+                    self.wfile.write(chunk_hex.encode() + b"\r\n" + chunk + b"\r\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    break
+
+            # 发送 chunked 结束标记
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
+            resp.close()
+
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            sys.stderr.write(f"[Cloud] 火山引擎 HTTP {e.code}: {err_body}\n")
+            self._send_json(e.code, {
+                "error": {"message": f"火山引擎 API 错误: {err_body}", "status": e.code}
+            })
+        except urllib.error.URLError as e:
+            sys.stderr.write(f"[Cloud] 连接失败: {e.reason}\n")
+            self._send_json(502, {"error": {"message": f"无法连接火山引擎: {e.reason}"}})
+        except Exception as e:
+            sys.stderr.write(f"[Cloud] 代理异常: {e}\n")
+            self._send_json(500, {"error": {"message": f"代理错误: {e}"}})
 
     def _send_json(self, code, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

@@ -1,6 +1,6 @@
 /**
  * main.js — 语音 AI 助手主控制器
- * 负责：语音识别（浏览器 / 讯飞）+ Ollama 对话 + UI 联动
+ * 负责：语音识别（浏览器 / 讯飞）+ AI 对话（本地 Ollama / 云端火山引擎） + UI 联动
  */
 class SpeechAIApp {
     constructor() {
@@ -31,9 +31,13 @@ class SpeechAIApp {
         this.modelSelector   = document.getElementById('modelSelector');
         this.clearChatBtn    = document.getElementById('clearChatBtn');
         this.deviceSelectorEl= null; // 动态创建
+        this.modelSourceSel  = document.getElementById('modelSource');   // 模型源切换
 
-        // ── Ollama 客户端 ──
-        this.ollama = null;
+        // ── AI 客户端（支持 Ollama 本地 / 火山引擎云端）──
+        this.ollama = null;      // OllamaClient 实例
+        this.cloud  = null;     // CloudClient 实例
+        this.aiClient = null;   // 当前活跃的客户端（指向 ollama 或 cloud）
+        this.currentSource = 'local';  // 'local' | 'cloud'
 
         // ── I2C 显示器控制器 ──
         this.i2c = null;
@@ -51,60 +55,111 @@ class SpeechAIApp {
         this.bindChatEvents();
         this.loadAudioDevices();
         this.initI2cPanel();
+        this.initModelSourceSwitch();  // 模型源切换
         await this.initOllama();
     }
 
-    // ── 初始化 Ollama 客户端 ──
+    // ── 初始化 AI 客户端（根据当前模型源）──
     async initOllama() {
-        // 先填充模型列表
-        try {
-            const models = await OllamaClient.fetchModels();
-            if (models.length > 0) {
-                this.modelSelector.innerHTML = '';
-                models.forEach(m => {
-                    const opt = document.createElement('option');
-                    opt.value = m;
-                    opt.textContent = m;
-                    if (m === 'qwen3:4b') opt.selected = true;
-                    this.modelSelector.appendChild(opt);
-                });
-                this.addDebugLog(`Ollama 已连接，可用模型: ${models.join(', ')}`);
-            } else {
-                this.addDebugLog('⚠ Ollama 未响应或无可用模型，请确认服务已启动');
+        if (this.currentSource === 'cloud') {
+            // 云端模式：使用静态模型列表
+            const models = CloudClient.getModels();
+            this.modelSelector.innerHTML = '';
+            models.forEach(m => {
+                const opt = document.createElement('option');
+                opt.value = m.id;
+                opt.textContent = m.name;
+                if (m.id === CLOUD_CONFIG.defaultModel) opt.selected = true;
+                this.modelSelector.appendChild(opt);
+            });
+            this.addDebugLog(`云端模型已加载: ${models.map(m => m.name).join(', ')}`);
+        } else {
+            // 本地模式：从 Ollama 获取模型列表
+            try {
+                const models = await OllamaClient.fetchModels();
+                if (models.length > 0) {
+                    this.modelSelector.innerHTML = '';
+                    models.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m;
+                        opt.textContent = m;
+                        if (m === 'qwen3:4b') opt.selected = true;
+                        this.modelSelector.appendChild(opt);
+                    });
+                    this.addDebugLog(`Ollama 已连接，可用模型: ${models.join(', ')}`);
+                } else {
+                    this.addDebugLog('⚠ Ollama 未响应或无可用模型，请确认服务已启动');
+                    this.setAiStatus('⚠ Ollama 未连接');
+                }
+            } catch (e) {
+                this.addDebugLog(`Ollama 连接失败: ${e.message}`);
                 this.setAiStatus('⚠ Ollama 未连接');
             }
-        } catch (e) {
-            this.addDebugLog(`Ollama 连接失败: ${e.message}`);
-            this.setAiStatus('⚠ Ollama 未连接');
         }
 
-        this.createOllamaClient();
+        this.createAiClient();
 
-        // 模型切换时重建客户端（保留对话历史选项可选）
+        // 模型切换时重建客户端
         this.modelSelector.addEventListener('change', () => {
-            this.createOllamaClient();
+            this.createAiClient();
             this.addDebugLog(`切换模型: ${this.modelSelector.value}`);
         });
     }
 
-    createOllamaClient() {
-        // 如果上一个正在生成，先中断
-        if (this.ollama) this.ollama.abort();
+    /**
+     * 模型源切换（本地/云端）
+     */
+    initModelSourceSwitch() {
+        if (!this.modelSourceSel) return;
 
-        this.ollama = new OllamaClient({
-            model: this.modelSelector.value || 'qwen3:4b',
-            onToken: (token, full) => {
-                this.updateStreamingBubble(full);
-            },
-            onDone: (clean, raw) => {
-                this.finalizeAssistantBubble(clean);
-                this.setGenerating(false);
-            },
-            onError: (err) => {
-                this.appendErrorBubble(`AI 回答失败: ${err.message}`);
-                this.setGenerating(false);
-            },
+        this.modelSourceSel.addEventListener('change', async () => {
+            this.currentSource = this.modelSourceSel.value;
+            this.addDebugLog(`切换模型源: ${this.currentSource === 'cloud' ? '火山引擎(云端)' : 'Ollama(本地)'}`);
+
+            if (this.aiClient) { this.aiClient.abort(); this.aiClient = null; }
+            await this.initOllama();
         });
+    }
+
+    createAiClient() {
+        // 如果上一个正在生成，先中断
+        if (this.aiClient) this.aiClient.abort();
+
+        if (this.currentSource === 'cloud') {
+            // 云端模式：使用 CloudClient
+            this.cloud = new CloudClient({
+                model: this.modelSelector.value || CLOUD_CONFIG.defaultModel,
+                onToken: (token, full) => {
+                    this.updateStreamingBubble(full);
+                },
+                onDone: (clean, raw) => {
+                    this.finalizeAssistantBubble(clean);
+                    this.setGenerating(false);
+                },
+                onError: (err) => {
+                    this.appendErrorBubble(`云端模型错误: ${err.message}`);
+                    this.setGenerating(false);
+                },
+            });
+            this.aiClient = this.cloud;
+        } else {
+            // 本地模式：使用 OllamaClient
+            this.ollama = new OllamaClient({
+                model: this.modelSelector.value || 'qwen3:4b',
+                onToken: (token, full) => {
+                    this.updateStreamingBubble(full);
+                },
+                onDone: (clean, raw) => {
+                    this.finalizeAssistantBubble(clean);
+                    this.setGenerating(false);
+                },
+                onError: (err) => {
+                    this.appendErrorBubble(`AI 回答失败: ${err.message}`);
+                    this.setGenerating(false);
+                },
+            });
+            this.aiClient = this.ollama;
+        }
     }
 
     // ═══════════════════════════════════════
@@ -294,7 +349,7 @@ class SpeechAIApp {
 
         // 停止生成
         this.stopGenBtn.addEventListener('click', () => {
-            if (this.ollama) this.ollama.abort();
+            if (this.aiClient) this.aiClient.abort();
             this.setGenerating(false);
             this.finalizeAssistantBubble(this._streamingText || '（已中断）');
             this.addDebugLog('用户中断生成');
@@ -302,7 +357,7 @@ class SpeechAIApp {
 
         // 清空对话
         this.clearChatBtn.addEventListener('click', () => {
-            if (this.ollama) { this.ollama.abort(); this.ollama.clearHistory(); }
+            if (this.aiClient) { this.aiClient.abort(); this.aiClient.clearHistory(); }
             this.chatMessages.innerHTML = `
                 <div class="chat-welcome">
                     <div class="welcome-icon">&#129504;</div>
@@ -315,17 +370,17 @@ class SpeechAIApp {
 
     handleChatSend() {
         const text = this.chatInput.value.trim();
-        if (!text || this.ollama?.isGenerating) return;
+        if (!text || this.aiClient?.isGenerating) return;
         this.chatInput.value = '';
         this.sendToOllama(text);
     }
 
     // ═══════════════════════════════════════
-    //  发送消息给 Ollama
+    //  发送消息给 AI（本地/云端统一接口）
     // ═══════════════════════════════════════
     async sendToOllama(text) {
-        if (!this.ollama) { this.appendErrorBubble('Ollama 客户端未初始化'); return; }
-        if (this.ollama.isGenerating) { this.addDebugLog('上一条回答还在生成中，请稍候'); return; }
+        if (!this.aiClient) { this.appendErrorBubble('AI 客户端未初始化'); return; }
+        if (this.aiClient.isGenerating) { this.addDebugLog('上一条回答还在生成中，请稍候'); return; }
 
         // ── 检测显示器控制指令（并行执行 i2cset，不拦截 AI 对话）──
         const i2cIntent = this.tryExecuteI2cCommand(text);
@@ -336,14 +391,15 @@ class SpeechAIApp {
 
         // 显示用户气泡
         this.appendUserBubble(text);
-        this.addDebugLog(`发送给 Ollama: ${text}`);
+        this.addDebugLog(`发送给 ${this.currentSource === 'cloud' ? '云端' : '本地'}AI: ${text}`);
 
         // 创建 AI 气泡（思考中）
         this._streamingText = '';
         this._streamingBubbleEl = this.appendAssistantBubble();
 
         this.setGenerating(true);
-        this.setAiStatus(`${this.ollama.model} 正在思考...`);
+        const modelName = this.aiClient.model || 'unknown';
+        this.setAiStatus(`${modelName} 正在思考...`);
 
         try {
             // 如果检测到 I2C 控制指令，在消息前注入上下文提示 AI 已执行操作
@@ -362,7 +418,7 @@ class SpeechAIApp {
                 this.addDebugLog(`[I2C] 注入AI上下文: ${detail}`);
             }
 
-            await this.ollama.chat(sendText);
+            await this.aiClient.chat(sendText);
         } catch (e) {
             // 错误已由 onError 回调处理
         }

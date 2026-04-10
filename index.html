@@ -58,6 +58,11 @@
             <span class="panel-icon">&#129504;</span>
             <span class="panel-title">AI 助手</span>
             <div class="panel-actions">
+                <!-- 模型源切换 -->
+                <select id="modelSource" class="model-source-sel" title="切换模型来源">
+                    <option value="local">本地(Ollama)</option>
+                    <option value="cloud">云端(火山引擎)</option>
+                </select>
                 <!-- 模型选择 -->
                 <select id="modelSelector" class="model-selector">
                     <option value="qwen3:4b">qwen3:4b</option>
@@ -152,6 +157,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <script src="iflytek-api.js"></script>
     <script src="ollama-api.js"></script>
+    <script src="cloud-api.js"></script>
     <script src="i2c-api.js"></script>
     <script src="main.js"></script>
 </body>
