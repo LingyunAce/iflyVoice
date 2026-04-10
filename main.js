@@ -35,6 +35,9 @@ class SpeechAIApp {
         // ── Ollama 客户端 ──
         this.ollama = null;
 
+        // ── I2C 显示器控制器 ──
+        this.i2c = null;
+
         this.init();
     }
 
@@ -47,6 +50,7 @@ class SpeechAIApp {
         this.bindSpeechEvents();
         this.bindChatEvents();
         this.loadAudioDevices();
+        this.initI2cPanel();
         await this.initOllama();
     }
 
@@ -323,6 +327,9 @@ class SpeechAIApp {
         if (!this.ollama) { this.appendErrorBubble('Ollama 客户端未初始化'); return; }
         if (this.ollama.isGenerating) { this.addDebugLog('上一条回答还在生成中，请稍候'); return; }
 
+        // ── 检测显示器控制指令（并行执行 i2cset，不拦截 AI 对话）──
+        const i2cIntent = this.tryExecuteI2cCommand(text);
+
         // 移除欢迎语
         const welcome = this.chatMessages.querySelector('.chat-welcome');
         if (welcome) welcome.remove();
@@ -339,7 +346,23 @@ class SpeechAIApp {
         this.setAiStatus(`${this.ollama.model} 正在思考...`);
 
         try {
-            await this.ollama.chat(text);
+            // 如果检测到 I2C 控制指令，在消息前注入上下文提示 AI 已执行操作
+            let sendText = text;
+            if (i2cIntent) {
+                const controlLabels = { brightness: '亮度', contrast: '对比度', powerMode: '电源' };
+                const ctrlLabel = controlLabels[i2cIntent.control] || i2cIntent.control;
+                let detail = '';
+                if (i2cIntent.action === 'set') {
+                    detail = `已将${ctrlLabel}调整为 ${i2cIntent.value}%`;
+                } else if (i2cIntent.action === 'adjust') {
+                    const dir = (i2cIntent.delta || 0) > 0 ? '调高' : '调低';
+                    detail = `已将${ctrlLabel}${dir}`;
+                }
+                sendText = `[系统提示：${detail}，I2C命令已直接执行。请确认操作结果并友好回复用户，不要说"无法操作设备"。]\n\n用户消息：${text}`;
+                this.addDebugLog(`[I2C] 注入AI上下文: ${detail}`);
+            }
+
+            await this.ollama.chat(sendText);
         } catch (e) {
             // 错误已由 onError 回调处理
         }
@@ -452,6 +475,216 @@ class SpeechAIApp {
         this.statusEl.textContent = text;
         if (isRecording) this.statusEl.classList.add('recording');
         else this.statusEl.classList.remove('recording');
+    }
+
+    // ═══════════════════════════════════════
+    //  I2C 显示器控制面板
+    // ═══════════════════════════════════════
+
+    initI2cPanel() {
+        // 创建控制器实例
+        this.i2c = new window.I2cController();
+
+        // DOM 引用
+        this.brightnessSlider = document.getElementById('brightnessSlider');
+        this.contrastSlider   = document.getElementById('contrastSlider');
+        this.brightnessValue = document.getElementById('brightnessValue');
+        this.contrastValue   = document.getElementById('contrastValue');
+        this.adbCheckBtn     = document.getElementById('adbCheckBtn');
+        this.adbDeviceInfo   = document.getElementById('adbDeviceInfo');
+        this.i2cStatusDot    = document.getElementById('i2cStatusDot');
+        this.i2cStatusText   = document.getElementById('i2cStatusText');
+        this.i2cCmdLog       = document.getElementById('i2cCmdLog');
+
+        // 状态回调
+        this.i2c.onStatusChange = (status, data) => {
+            this.updateI2cStatus(status, data);
+        };
+
+        // 绑定事件
+        if (this.brightnessSlider) {
+            this.brightnessSlider.addEventListener('input', () => {
+                const val = parseInt(this.brightnessSlider.value);
+                this.brightnessValue.textContent = val;
+            });
+            this.brightnessSlider.addEventListener('change', () => {
+                const val = parseInt(this.brightnessSlider.value);
+                this.executeI2cCommand('brightness', val);
+            });
+        }
+
+        if (this.contrastSlider) {
+            this.contrastSlider.addEventListener('input', () => {
+                const val = parseInt(this.contrastSlider.value);
+                this.contrastValue.textContent = val;
+            });
+            this.contrastSlider.addEventListener('change', () => {
+                const val = parseInt(this.contrastSlider.value);
+                this.executeI2cCommand('contrast', val);
+            });
+        }
+
+        if (this.adbCheckBtn) {
+            this.adbCheckBtn.addEventListener('click', () => this.checkAdbConnection());
+        }
+
+        // 快捷按钮
+        document.querySelectorAll('.quick-actions .monitor-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const action = e.target.dataset.action;
+                const value = parseInt(e.target.dataset.value);
+                if (action === 'powerMode') {
+                    this.executeI2cCommand(action, value);
+                } else if (action === 'brightness') {
+                    this.brightnessSlider.value = value;
+                    this.brightnessValue.textContent = value;
+                    this.executeI2cCommand('brightness', value);
+                }
+            });
+        });
+
+        // 启动时自动检测一次 ADB
+        setTimeout(() => this.checkAdbConnection(), 1000);
+
+        this.addDebugLog('I2C 显示器控制面板已初始化');
+    }
+
+    async checkAdbConnection() {
+        if (!this.adbCheckBtn) return;
+        this.adbCheckBtn.disabled = true;
+        this.adbCheckBtn.textContent = '检测中...';
+        try {
+            const result = await this.i2c.checkConnection();
+            if (result.connected) {
+                this.adbDeviceInfo.textContent = `✅ ${result.deviceCount} 台设备`;
+                this.addDebugLog(`ADB 已连接: ${result.devices.join(', ')}`);
+            } else {
+                this.adbDeviceInfo.textContent = `❌ ${result.error || '无设备'}`;
+                this.addDebugLog(`ADB 未连接: ${result.error || '无设备'}`);
+            }
+        } catch (e) {
+            this.adbDeviceInfo.textContent = `❌ ${e.message}`;
+            this.addDebugLog(`ADB 检测异常: ${e.message}`);
+        } finally {
+            this.adbCheckBtn.disabled = false;
+            this.adbCheckBtn.textContent = '检测设备';
+        }
+    }
+
+    updateI2cStatus(status, data) {
+        const dot = this.i2cStatusDot;
+        const txt = this.i2cStatusText;
+        if (!dot || !txt) return;
+
+        dot.className = 'status-dot';
+        switch (status) {
+            case 'connected':
+                dot.classList.add('status-dot-on'); txt.textContent = '已连接'; break;
+            case 'disconnected':
+                dot.classList.add('status-dot-off'); txt.textContent = '未连接'; break;
+            case 'executing':
+                dot.classList.add('status-dot-busy'); txt.textContent = '执行中...'; break;
+            default:
+                dot.classList.add('status-dot-off'); txt.textContent = status; break;
+        }
+    }
+
+    /**
+     * 执行 I2C DDC/CI 命令（带防抖 + 状态反馈）
+     */
+    async executeI2cCommand(controlName, value) {
+        if (!this.i2c) return;
+
+        this.updateI2cStatus('executing');
+        this.addDebugLog(`[I2C] 设置 ${controlName} = ${value}`);
+
+        try {
+            const cmdInfo = buildDdcCiCommand(
+                I2C_CONFIG.VCP_CODES[controlName] || 0x10,
+                controlName === 'powerMode' ? value : value
+            );
+            this.appendI2cLog(cmdInfo.cmdStr);
+
+            const result = await this.i2c.setControl(controlName, value);
+            this.addDebugLog(`[I2C] ✓ ${controlName}=${value} 成功`);
+            this.updateI2cStatus(this.i2c.connected ? 'connected' : 'disconnected');
+        } catch (e) {
+            this.addDebugLog(`[I2C] ✗ 失败: ${e.message}`);
+            this.appendI2cLog(`错误: ${e.message}`, true);
+            this.updateI2cStatus('error');
+        }
+    }
+
+    appendI2cLog(text, isError = false) {
+        if (!this.i2cCmdLog) return;
+        const ts = new Date().toLocaleTimeString();
+        const line = `[${ts}] ${text}\n`;
+        this.i2cCmdLog.textContent += line;
+        this.i2cCmdLog.scrollTop = this.i2cCmdLog.scrollHeight;
+        if (isError && this.i2cCmdLog) {
+            this.i2cCmdLog.style.color = '#ff6b7a';
+        } else if (this.i2cCmdLog) {
+            this.i2cCmdLog.style.color = '#7ec8e3';
+        }
+    }
+
+    /**
+     * 检测文本中的显示器控制指令，并行执行 i2cset（不拦截 AI 对话）
+     * 效果：用户说"亮度调到50" → 同时执行 i2cset + 照常发给 AI 回复 + 同步更新滑块 UI
+     * @returns {object|null} 检测到的控制意图对象（用于注入 AI 上下文）
+     */
+    tryExecuteI2cCommand(text) {
+        if (!this.i2c) return null;
+
+        const intent = this.i2c.parseVoiceCommand(text);
+        if (!intent) return null;
+
+        this.addDebugLog(`[I2C] 检测到控制指令: action=${intent.action} control=${intent.control} value=${intent.value || intent.delta || ''}`);
+
+        if (intent.action === 'set') {
+            let targetVal = intent.value;
+
+            // 电源控制
+            if (intent.control === 'powerMode') {
+                const powerLabels = { 0x04: '待机', 0x01: '唤醒', 0x06: '关闭' };
+                this.addDebugLog(`[I2C] 🖥️ [显示器] ${powerLabels[targetVal] || targetVal}`);
+                this.executeI2cCommand(intent.control, targetVal);
+                return intent;
+            }
+
+            // 亮度/对比度等 0-100 范围的控制 — 更新滑块 UI
+            if (intent.control === 'brightness' && this.brightnessSlider) {
+                this.brightnessSlider.value = targetVal;
+                this.brightnessValue.textContent = targetVal;
+            } else if (intent.control === 'contrast' && this.contrastSlider) {
+                this.contrastSlider.value = targetVal;
+                this.contrastValue.textContent = targetVal;
+            }
+
+            this.addDebugLog(`[I2C] 🖥️ [${intent.control}] → ${targetVal}%，已同步滑块`);
+            // 非阻塞执行 i2cset（fire-and-forget）
+            this.executeI2cCommand(intent.control, targetVal);
+
+        } else if (intent.action === 'adjust') {
+            const slider = intent.control === 'brightness' ? this.brightnessSlider : this.contrastSlider;
+            if (!slider) return intent;
+
+            let current = parseInt(slider.value) || 50;
+            let targetVal = Math.max(0, Math.min(100, current + intent.delta));
+            const direction = intent.delta > 0 ? '↑' : '↓';
+
+            slider.value = targetVal;
+            if (intent.control === 'brightness' && this.brightnessValue) {
+                this.brightnessValue.textContent = targetVal;
+            } else if (intent.control === 'contrast' && this.contrastValue) {
+                this.contrastValue.textContent = targetVal;
+            }
+
+            this.addDebugLog(`[I2C] 🖥️ [${intent.control}] ${direction} ${targetVal}%，已同步滑块`);
+            this.executeI2cCommand(intent.control, targetVal);
+        }
+
+        return intent;
     }
 
     handleSpeechError(error) {

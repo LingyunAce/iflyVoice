@@ -87,10 +87,72 @@
         </div>
     </div>
 
+    <!-- 显示器控制面板 -->
+    <div id="monitorPanel" class="panel panel-monitor">
+        <div class="panel-header">
+            <span class="panel-icon">&#128431;</span>
+            <span class="panel-title">显示器控制</span>
+            <div class="panel-actions">
+                <span id="i2cStatusDot" class="status-dot status-dot-off"></span>
+                <span id="i2cStatusText" class="i2c-status-text">未连接</span>
+            </div>
+        </div>
+
+        <div class="monitor-controls">
+            <!-- ADB 连接状态 -->
+            <div class="control-section adb-section">
+                <label class="control-label">&#128279; ADB 设备</label>
+                <button id="adbCheckBtn" class="monitor-btn monitor-btn-sm">检测设备</button>
+                <span id="adbDeviceInfo" class="device-info-text"></span>
+            </div>
+
+            <!-- 亮度控制 -->
+            <div class="control-section">
+                <div class="control-label-row">
+                    <label class="control-label">&#9728;&#65039; 亮度</label>
+                    <span id="brightnessValue" class="control-value">50</span>
+                </div>
+                <input type="range" id="brightnessSlider" class="control-slider brightness-slider"
+                       min="0" max="100" value="50">
+                <div class="slider-marks">
+                    <span>0</span><span>50</span><span>100</span>
+                </div>
+            </div>
+
+            <!-- 对比度控制 -->
+            <div class="control-section">
+                <div class="control-label-row">
+                    <label class="control-label">&#9673; 对比度</label>
+                    <span id="contrastValue" class="control-value">50</span>
+                </div>
+                <input type="range" id="contrastSlider" class="control-slider contrast-slider"
+                       min="0" max="100" value="50">
+                <div class="slider-marks">
+                    <span>0</span><span>50</span><span>100</span>
+                </div>
+            </div>
+
+            <!-- 快捷操作按钮 -->
+            <div class="quick-actions">
+                <button class="monitor-btn" data-action="brightness" data-value="0">&#127769; 最暗</button>
+                <button class="monitor-btn" data-action="brightness" data-value="50">&#128161; 中等</button>
+                <button class="monitor-btn" data-action="brightness" data-value="100">&#9728;&#xFE0F; 最亮</button>
+                <button class="monitor-btn monitor-btn-danger" data-action="powerMode" data-value="4">&#128683; 待机</button>
+            </div>
+
+            <!-- 最近命令日志 -->
+            <details class="cmd-details">
+                <summary>&#128269; 命令日志</summary>
+                <pre id="i2cCmdLog" class="cmd-log-box"></pre>
+            </details>
+        </div>
+    </div>
+
     <!-- 依赖脚本 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
     <script src="iflytek-api.js"></script>
     <script src="ollama-api.js"></script>
+    <script src="i2c-api.js"></script>
     <script src="main.js"></script>
 </body>
 </html>

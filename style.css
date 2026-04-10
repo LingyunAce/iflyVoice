@@ -7,7 +7,7 @@
 
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+    background: linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 50%, #3a3a3c 100%);
     min-height: 100vh;
     display: flex;
     align-items: stretch;
@@ -90,14 +90,14 @@ body {
 }
 
 .api-selector label:has(input:checked) {
-    border-color: #7c83fd;
-    background: rgba(124, 131, 253, 0.15);
-    color: #a5b4fc;
+    border-color: #34c759;
+    background: rgba(52, 199, 89, 0.15);
+    color: #34c759;
     font-weight: 600;
 }
 
 .api-selector input[type="radio"] {
-    accent-color: #7c83fd;
+    accent-color: #34c759;
     width: 14px;
     height: 14px;
 }
@@ -141,7 +141,7 @@ body {
 }
 
 .record-btn {
-    background: linear-gradient(135deg, #667eea, #764ba2);
+    background: linear-gradient(135deg, #4a4a4d, #636366);
     border: none;
     border-radius: 50%;
     width: 120px;
@@ -155,12 +155,12 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 8px 32px rgba(102, 126, 234, 0.35);
+    box-shadow: 0 8px 32px rgba(99, 99, 102, 0.45);
 }
 
 .record-btn:hover {
     transform: scale(1.05);
-    box-shadow: 0 12px 40px rgba(102, 126, 234, 0.5);
+    box-shadow: 0 12px 40px rgba(99, 99, 102, 0.6);
 }
 
 .record-btn:active {
@@ -227,8 +227,8 @@ body {
 }
 
 .result-box.success {
-    border-color: rgba(124, 131, 253, 0.4);
-    background: rgba(124, 131, 253, 0.06);
+    border-color: rgba(142, 142, 147, 0.4);
+    background: rgba(142, 142, 147, 0.06);
 }
 
 .result-box .placeholder {
@@ -249,7 +249,7 @@ body {
 
 /* ===== 发送给 AI 按钮 ===== */
 .send-btn {
-    background: linear-gradient(135deg, #667eea, #764ba2);
+    background: linear-gradient(135deg, #4a4a4d, #636366);
     color: white;
     border: none;
     border-radius: 16px;
@@ -263,7 +263,7 @@ body {
 
 .send-btn:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 4px 16px rgba(99, 99, 102, 0.5);
 }
 
 .send-btn:disabled {
@@ -372,11 +372,11 @@ body {
 }
 
 .message.user .message-avatar {
-    background: linear-gradient(135deg, #667eea, #764ba2);
+    background: linear-gradient(135deg, #636366, #48484a);
 }
 
 .message.assistant .message-avatar {
-    background: linear-gradient(135deg, #11998e, #38ef7d);
+    background: linear-gradient(135deg, #636366, #8e8e93);
 }
 
 .message-bubble {
@@ -388,8 +388,8 @@ body {
 }
 
 .message.user .message-bubble {
-    background: linear-gradient(135deg, rgba(102, 126, 234, 0.3), rgba(118, 75, 162, 0.3));
-    border: 1px solid rgba(102, 126, 234, 0.3);
+    background: linear-gradient(135deg, rgba(99, 99, 102, 0.3), rgba(72, 72, 74, 0.3));
+    border: 1px solid rgba(99, 99, 102, 0.3);
     color: #e8eaf6;
     border-bottom-right-radius: 4px;
 }
@@ -405,7 +405,7 @@ body {
 .typing-cursor::after {
     content: '|';
     animation: blink 0.8s step-end infinite;
-    color: #7c83fd;
+    color: #8e8e93;
     font-weight: 300;
 }
 
@@ -490,7 +490,7 @@ body {
 }
 
 .chat-input:focus {
-    border-color: rgba(124, 131, 253, 0.5);
+    border-color: rgba(142, 142, 147, 0.5);
     background: rgba(255, 255, 255, 0.08);
 }
 
@@ -508,7 +508,7 @@ body {
 }
 
 .chat-send-btn {
-    background: linear-gradient(135deg, #667eea, #764ba2);
+    background: linear-gradient(135deg, #4a4a4d, #636366);
     color: white;
     border: none;
     border-radius: 10px;
@@ -521,7 +521,7 @@ body {
 
 .chat-send-btn:hover:not(:disabled) {
     transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+    box-shadow: 0 4px 16px rgba(99, 99, 102, 0.5);
 }
 
 .chat-send-btn:disabled {
@@ -558,7 +558,7 @@ body {
 }
 
 .model-selector option {
-    background: #1a1a2e;
+    background: #1c1c1e;
     color: #e0e0e0;
 }
 
@@ -601,6 +601,7 @@ body {
         padding: 12px;
         overflow: auto;
         height: auto;
+        background: linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 100%);
     }
 
     .panel-left {
@@ -612,4 +613,246 @@ body {
     .panel-right {
         min-height: 500px;
     }
+}
+
+/* ===== 显示器控制面板 ===== */
+.panel-monitor {
+    width: 300px;
+    min-width: 280px;
+    margin-left: 12px;
+}
+
+.monitor-controls {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    padding: 16px 20px;
+    overflow-y: auto;
+}
+
+/* ── 控制区域 ── */
+.control-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.control-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.control-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.7);
+}
+
+.control-value {
+    font-size: 14px;
+    font-weight: 700;
+    color: #8e8e93;
+    min-width: 32px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── 滑块样式 ── */
+.control-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 8px;
+    border-radius: 4px;
+    outline: none;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.control-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    transition: transform 0.15s ease;
+}
+
+.control-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+}
+
+.control-slider::-moz-range-thumb {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    cursor: pointer;
+    border: none;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* 亮度滑块 — 灰色渐变 */
+.brightness-slider {
+    background: linear-gradient(to right, #1c1c1e, #8e8e93, #ffffff);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* 对比度滑块 — 灰度渐变 */
+.contrast-slider {
+    background: linear-gradient(to right, #555, #ccc, #fff);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.slider-marks {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.3);
+    padding: 0 2px;
+}
+
+/* ── 快捷操作按钮 ── */
+.quick-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 8px;
+}
+
+.monitor-btn {
+    background: rgba(142, 142, 147, 0.15);
+    border: 1px solid rgba(142, 142, 147, 0.3);
+    color: #c7c7cc;
+    border-radius: 10px;
+    padding: 9px 8px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    text-align: center;
+    white-space: nowrap;
+}
+
+.monitor-btn:hover:not(:disabled) {
+    background: rgba(142, 142, 147, 0.28);
+    border-color: rgba(142, 142, 147, 0.55);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(142, 142, 147, 0.25);
+}
+
+.monitor-btn-sm {
+    padding: 6px 14px;
+    font-size: 11px;
+    border-radius: 8px;
+    width: auto;
+}
+
+.monitor-btn-danger {
+    grid-column: span 1;
+    background: rgba(255, 71, 87, 0.12);
+    border-color: rgba(255, 71, 87, 0.3);
+    color: #ff6b7a;
+}
+
+.monitor-btn-danger:hover {
+    background: rgba(255, 71, 87, 0.22);
+    border-color: rgba(255, 71, 87, 0.5);
+    box-shadow: 0 4px 12px rgba(255, 71, 87, 0.2);
+}
+
+.monitor-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* ── ADB 设备区 ── */
+.adb-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    background: rgba(255, 255, 255, 0.03);
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.device-info-text {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.45);
+    flex: 1;
+    min-width: 80px;
+}
+
+/* ── I2C 状态指示灯 ── */
+.status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+    transition: all 0.3s ease;
+}
+
+.status-dot-on {
+    background: #38ef7d;
+    box-shadow: 0 0 6px rgba(56, 239, 125, 0.6);
+}
+
+.status-dot-off {
+    background: #555;
+}
+
+.status-dot-busy {
+    background: #f5a623;
+    animation: pulseDot 1s ease-in-out infinite;
+}
+
+@keyframes pulseDot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+}
+
+.i2c-status-text {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.45);
+}
+
+/* ── 命令日志折叠区 ── */
+.cmd-details {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.cmd-details summary {
+    padding: 8px 14px;
+    color: rgba(255, 255, 255, 0.4);
+    font-size: 12px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.cmd-details summary:hover {
+    color: rgba(255, 255, 255, 0.6);
+}
+
+.cmd-log-box {
+    background: #0d1117;
+    padding: 12px 14px;
+    max-height: 140px;
+    overflow-y: auto;
+    font-family: 'Cascadia Code', 'Fira Code', 'Courier New', monospace;
+    font-size: 11px;
+    line-height: 1.6;
+    color: #7ec8e3;
+    white-space: pre-wrap;
+    word-break: break-all;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    margin: 0;
 }
