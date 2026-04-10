@@ -8,7 +8,7 @@
 body {
     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
     background: linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 50%, #3a3a3c 100%);
-    min-height: 100vh;
+    height: 100vh;
     display: flex;
     align-items: stretch;
     gap: 0;
@@ -39,6 +39,8 @@ body {
 
 .panel-right {
     flex: 2;
+    min-width: 0;
+    overflow: hidden;
 }
 
 /* ===== 面板头部 ===== */
@@ -307,6 +309,7 @@ body {
 /* ===== AI 对话面板 ===== */
 .chat-messages {
     flex: 1;
+    min-height: 0;
     overflow-y: auto;
     padding: 20px 24px;
     display: flex;
