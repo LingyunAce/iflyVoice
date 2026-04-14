@@ -16,8 +16,17 @@
 
 > 切换模型来源：页面右上角 **本地(Ollama) / 云端(火山引擎)** 下拉框
 
-### 显示器硬件控制（语音 + 界面）
-- 通过 ADB 连接显示器，控制亮度、对比度、输入源、电源模式
+### 显示器硬件控制（语音 + 界面，双路径）
+**ADB 显示器**（通过 USB-C/HDMI 连接的支持 DDC/CI 的显示器）
+- 通过 ADB shell + i2cset 执行 DDC/CI 命令
+- 支持亮度、对比度、输入源、电源模式控制
+
+**内置屏幕**（笔记本自带显示器）
+- 通过 Windows WMI 接口控制亮度
+- 通过 WMI/DDC/CI 控制对比度（部分设备支持）
+- 切换方式：右侧面板顶部 **显示器类型** 下拉框选择「内置屏幕」
+
+通用功能：
 - 支持自然语言指令："亮度调成 50%"、"亮度调高一点"、"亮度调到最低"等
 - 也可直接拖动右侧面板的滑块操作
 
@@ -27,17 +36,18 @@
 
 ```
 iflyVoice/
-├── index.html          # 主页面
-├── main.js             # 应用核心逻辑（语音、AI 对话、I2C 控制调度）
-├── style.css           # 样式文件（深灰主题）
-├── server.py           # Python 代理服务器（多线程，支持 Ollama/火山引擎代理）
-├── ollama-api.js       # Ollama 本地模型客户端（SSE 流式）
-├── cloud-api.js        # 火山引擎云端模型客户端（OpenAI 兼容 SSE 流式）
-├── iflytek-api.js     # 讯飞语音识别 API 客户端（WebSocket 流式识别）
-├── i2c-api.js          # DDC/CI I2C 控制模块（ADB + i2cset）
-├── IFLYTEK_SETUP.md    # 讯飞 API 配置说明
-├── start-server.bat    # Windows 一键启动脚本
-└── README.md           # 本文档
+├── index.html              # 主页面
+├── main.js                 # 应用核心逻辑（语音、AI 对话、显示器控制调度）
+├── style.css               # 样式文件（深灰主题）
+├── server.py               # Python 代理服务器（多线程，Ollama/火山引擎/I2C/原生控制）
+├── ollama-api.js           # Ollama 本地模型客户端（SSE 流式）
+├── cloud-api.js            # 火山引擎云端模型客户端（OpenAI 兼容 SSE 流式）
+├── iflytek-api.js         # 讯飞语音识别 API 客户端（WebSocket 流式识别）
+├── i2c-api.js              # DDC/CI I2C 控制模块（ADB + i2cset）
+├── native-display-api.js   # Windows 内置屏幕控制客户端（WMI 亮度 / DDC/CI 对比度）
+├── IFLYTEK_SETUP.md        # 讯飞 API 配置说明
+├── start-server.bat        # Windows 一键启动脚本
+└── README.md               # 本文档
 ```
 
 ---
@@ -98,14 +108,15 @@ VOLCENGINE_CONFIG = {
 - **多线程 HTTPServer**：每个请求独立线程，互不阻塞
 - **Ollama 代理**（`/ollama/*`）：原始 Socket 转发，支持 SSE 流式
 - **火山引擎代理**（`/cloud/*`）：OpenAI 兼容格式，分块转发 SSE 流
-- **I2C 代理**（`/i2c/*`）：执行 adb shell i2cset 命令
+- **I2C 代理**（`/i2c/*`）：执行 adb shell i2cset 命令（ADB 显示器）
+- **原生控制代理**（`/native/*`）：WMI 亮度设置 / DDC/CI 对比度（内置屏幕）
 
 ### 语音命令解析（i2c-api.js）
 支持的自然语言模式：
 - 设置值：`亮度调成 50%` / `对比度设为 80`
 - 极端值：`亮度调到最低` → 0%，`亮度调到最高` → 100%
 - 相对调整：`亮度调高一点` / `对比度调低 5`
-- 电源控制：`显示器待机` / `关闭显示器`
+- 电源控制：`关闭显示器`
 
 ---
 

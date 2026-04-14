@@ -57,6 +57,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_i2c()
         elif self.path.startswith("/cloud/"):
             self._proxy_cloud("GET")
+        elif self.path.startswith("/native/"):
+            self._handle_native("GET")
         else:
             self._serve_static()
 
@@ -67,6 +69,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_i2c()
         elif self.path.startswith("/cloud/"):
             self._proxy_cloud("POST")
+        elif self.path.startswith("/native/"):
+            self._handle_native("POST")
         else:
             self.send_error(404)
 
@@ -361,6 +365,129 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             sys.stderr.write(f"[Cloud] 代理异常: {e}\n")
             self._send_json(500, {"error": {"message": f"代理错误: {e}"}})
+
+    # ── Windows 本地屏幕（内置显示器）控制 ──
+    def _handle_native(self, method):
+        """处理 /native/* 路由：WMI 亮度 / DDC/CI 对比度"""
+        path = self.path.split("?")[0]
+
+        if path == "/native/status":
+            self._native_status()
+            return
+
+        if path == "/native/brightness" and method == "GET":
+            # 读取当前亮度（供回读确认用）
+            ps = (
+                "$c = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightness -ErrorAction SilentlyContinue | Select-Object -First 1; "
+                "if ($c) { @{brightness=$c.CurrentBrightness} | ConvertTo-Json -Compress } "
+                "else { @{brightness=$null} | ConvertTo-Json -Compress }"
+            )
+            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
+            try:
+                data = json.loads(out.stdout.strip())
+                self._send_json(200, {"brightness": data.get("brightness")})
+            except Exception:
+                self._send_json(200, {"brightness": None})
+            return
+
+        if path == "/native/brightness" and method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl <= 0:
+                return self._send_json(400, {"success": False, "error": "Missing body"})
+            try:
+                body = json.loads(self.rfile.read(cl).decode("utf-8"))
+            except Exception as e:
+                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
+            self._native_set_brightness(body)
+            return
+
+        if path == "/native/contrast" and method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl <= 0:
+                return self._send_json(400, {"success": False, "error": "Missing body"})
+            try:
+                body = json.loads(self.rfile.read(cl).decode("utf-8"))
+            except Exception as e:
+                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
+            self._native_set_contrast(body)
+            return
+
+        self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {path}"})
+
+    def _native_status(self):
+        """检测 Windows WMI 亮度接口是否可用"""
+        script = (
+            "$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "if ($m) { "
+            "  $c = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightness -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "  @{connected=$true; brightness=($c.CurrentBrightness); instanceName=$m.InstanceName} | ConvertTo-Json -Compress"
+            "} else {"
+            "  @{connected=$false; error='WMI brightness not available'} | ConvertTo-Json -Compress"
+            "}"
+        )
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=15,
+            )
+            output = result.stdout.strip()
+            if output:
+                import json as _json
+                data = _json.loads(output)
+                self._send_json(200, data)
+            else:
+                self._send_json(200, {"connected": False, "error": "No WMI result"})
+        except Exception as e:
+            self._send_json(200, {"connected": False, "error": str(e)})
+
+    def _native_set_brightness(self, body):
+        """通过 WMI 设置亮度 (0-100)"""
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+
+        script = (
+            "$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "if ($m) { $m.WmiSetBrightness(1, %d); Write-Host 'OK' } else { Write-Host 'ERR' }"
+        ) % value
+
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=15,
+            )
+            out = result.stdout.strip()
+            if "OK" in out:
+                self._send_json(200, {"success": True, "brightness": value})
+            else:
+                self._send_json(200, {"success": False, "error": "WMI brightness not available"})
+        except Exception as e:
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _native_set_contrast(self, body):
+        """通过 WMI WmiMonitorContrastMethods 设置对比度（部分设备支持）"""
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+
+        script = (
+            "$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorContrastMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "if ($m) { "
+            "try { $m.WmiSetContrast(%d, 1); Write-Host 'OK' } "
+            "catch { Write-Host ('ERR:' + $_.Exception.Message) } "
+            "} else { Write-Host 'ERR: WMI contrast not available' }"
+        ) % value
+
+        try:
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                capture_output=True, text=True, timeout=15,
+            )
+            out = result.stdout.strip()
+            if "OK" in out:
+                self._send_json(200, {"success": True, "contrast": value})
+            else:
+                self._send_json(200, {"success": False, "error": out})
+        except Exception as e:
+            self._send_json(500, {"success": False, "error": str(e)})
 
     def _send_json(self, code, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

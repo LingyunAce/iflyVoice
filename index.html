@@ -98,6 +98,10 @@
             <span class="panel-icon">&#128431;</span>
             <span class="panel-title">显示器控制</span>
             <div class="panel-actions">
+                <select id="displayType" class="display-type-sel" title="选择显示器类型">
+                    <option value="native" selected>内置屏幕</option>
+                    <option value="adb">ADB 显示器</option>
+                </select>
                 <span id="i2cStatusDot" class="status-dot status-dot-off"></span>
                 <span id="i2cStatusText" class="i2c-status-text">未连接</span>
             </div>
@@ -105,10 +109,16 @@
 
         <div class="monitor-controls">
             <!-- ADB 连接状态 -->
-            <div class="control-section adb-section">
+            <div class="control-section adb-section" id="adbSection">
                 <label class="control-label">&#128279; ADB 设备</label>
                 <button id="adbCheckBtn" class="monitor-btn monitor-btn-sm">检测设备</button>
                 <span id="adbDeviceInfo" class="device-info-text"></span>
+            </div>
+            <!-- 内置屏幕状态 -->
+            <div class="control-section native-section" id="nativeSection" style="display:none">
+                <label class="control-label">&#128421; 内置屏幕</label>
+                <button id="nativeCheckBtn" class="monitor-btn monitor-btn-sm">检测连接</button>
+                <span id="nativeDeviceInfo" class="device-info-text"></span>
             </div>
 
             <!-- 亮度控制 -->
@@ -142,7 +152,7 @@
                 <button class="monitor-btn" data-action="brightness" data-value="0">&#127769; 最暗</button>
                 <button class="monitor-btn" data-action="brightness" data-value="50">&#128161; 中等</button>
                 <button class="monitor-btn" data-action="brightness" data-value="100">&#9728;&#xFE0F; 最亮</button>
-                <button class="monitor-btn monitor-btn-danger" data-action="powerMode" data-value="4">&#128683; 待机</button>
+
             </div>
 
             <!-- 最近命令日志 -->
@@ -158,6 +168,7 @@
     <script src="iflytek-api.js"></script>
     <script src="ollama-api.js"></script>
     <script src="cloud-api.js"></script>
+    <script src="native-display-api.js"></script>
     <script src="i2c-api.js"></script>
     <script src="main.js"></script>
 </body>

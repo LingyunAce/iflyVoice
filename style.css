@@ -566,6 +566,30 @@ body {
     color: #e0e0e0;
 }
 
+/* ===== 显示器类型选择器 ===== */
+.display-type-sel {
+    background: rgba(142, 142, 147, 0.15);
+    color: rgba(255, 255, 255, 0.8);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    outline: none;
+    font-weight: 600;
+}
+
+.display-type-sel option {
+    background: #1c1c1e;
+    color: #e0e0e0;
+}
+
+.display-type-sel option:checked,
+.display-type-sel option:selected {
+    background: rgba(52, 199, 89, 0.2);
+    color: #34c759;
+}
+
 .model-selector {
     background: rgba(255, 255, 255, 0.08);
     color: rgba(255, 255, 255, 0.7);

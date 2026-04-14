@@ -46,7 +46,6 @@ const I2C_CONFIG = {
     // 电源控制值
     POWER_MODE: {
         ON:  0x01,
-        STANDBY: 0x04,
         OFF: 0x06,
     },
 };
@@ -263,9 +262,7 @@ class I2cController {
         }
 
         // ── 电源控制 ──
-        if (/关闭?(?:显示器|屏幕)|关掉?(?:显示器|屏幕|屏)|休眠|待机/.test(t)) {
-            return { action: 'set', control: 'powerMode', value: 0x04 };  // STANDBY
-        }
+
         if (/打开?(?:显示器|屏幕)|开启?(?:显示器|屏幕)|唤醒/.test(t)) {
             return { action: 'set', control: 'powerMode', value: 0x01 };  // ON
         }
