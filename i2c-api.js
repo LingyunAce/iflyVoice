@@ -30,6 +30,7 @@ const I2C_CONFIG = {
         redGain:     0x13,             // 红色增益 (0-100)
         greenGain:   0x14,             // 绿色增益 (0-100)
         blueGain:    0x15,             // 蓝色增益 (0-100)
+        colorTemp:   0x0B,             // 色温 (某些显示器支持)
         inputSource: 0x60,             // 输入源切换
         powerMode:   0xD6,             // 电源控制
         sceneMode:   0x52,             // 场景模式
@@ -189,6 +190,15 @@ class I2cController {
     }
 
     /**
+     * 快捷方法：设置色温（部分显示器支持 VCP 0x0B）
+     * 范围 0-100：0=最暖(2700K)，100=最冷(6500K)
+     * @param {number} temp - 色温值 0-100
+     */
+    async setColorTemp(temp) {
+        return this.setControl('colorTemp', temp);
+    }
+
+    /**
      * 解析语音指令中的控制意图
      * 支持的指令格式示例:
      *   "把亮度调到50" / "亮度调高一点" / "屏幕亮一点" / "对比度设为70"
@@ -259,6 +269,37 @@ class I2cController {
         }
         if (/对比度.*调低|降低对比度/.test(t)) {
             return { action: 'adjust', control: 'contrast', delta: -10 };
+        }
+
+        // ── 色温相关 ──
+        // 支持: "色温调到50" "色温50" "把色温设成60"
+        let colorTempMatch =
+            t.match(/色温\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?色温\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:色温)\s*(\d{1,3})/);
+
+        if (colorTempMatch) {
+            return {
+                action: 'set',
+                control: 'colorTemp',
+                value: parseInt(colorTempMatch[1], 10),
+            };
+        }
+
+        // 色温极值
+        if (/色温.*(?:最高|最冷|最高)/.test(t)) {
+            return { action: 'set', control: 'colorTemp', value: 100 };
+        }
+        if (/色温.*(?:最低|最暖|暖一点|偏黄)/.test(t)) {
+            return { action: 'set', control: 'colorTemp', value: 0 };
+        }
+
+        // 色温模糊指令
+        if (/色温.*调高|更冷|偏蓝|冷一点/.test(t)) {
+            return { action: 'adjust', control: 'colorTemp', delta: +10 };
+        }
+        if (/色温.*调低|更暖|偏黄|暖一点/.test(t)) {
+            return { action: 'adjust', control: 'colorTemp', delta: -10 };
         }
 
         // ── 电源控制 ──

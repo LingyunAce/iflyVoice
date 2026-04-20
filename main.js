@@ -409,15 +409,20 @@ class SpeechAIApp {
             // 如果检测到 I2C 控制指令，在消息前注入上下文提示 AI 已执行操作
             let sendText = text;
             if (i2cIntent) {
-                const controlLabels = { brightness: '亮度', contrast: '对比度', powerMode: '电源' };
+                const controlLabels = { brightness: '亮度', contrast: '对比度', colorTemp: '色温', gamma: '伽马', powerMode: '电源' };
                 const ctrlLabel = controlLabels[i2cIntent.control] || i2cIntent.control;
 
                 if (i2cIntent.cannotAdjust) {
                     // 已达极限，无法再调
                     const dir = (i2cIntent.delta || 0) > 0 ? '最高' : '最低';
-                    const cur = i2cIntent.currentVal ?? (this.displayType === 'native'
-                        ? (i2cIntent.control === 'brightness' ? this.brightnessSlider?.value : this.contrastSlider?.value)
-                        : 50);
+                    let cur = i2cIntent.currentVal;
+                    if (cur == null) {
+                        if (i2cIntent.control === 'brightness') cur = this.brightnessSlider?.value;
+                        else if (i2cIntent.control === 'contrast') cur = this.contrastSlider?.value;
+                        else if (i2cIntent.control === 'colorTemp') cur = this.colorTempSlider?.value;
+                        else if (i2cIntent.control === 'gamma') cur = this.gammaSlider?.value;
+                    }
+                    cur = cur ?? 50;
                     sendText = `[系统提示：用户要求调整${ctrlLabel}，但${ctrlLabel}已经是${cur}（${dir}），无法再调整。请友好地告知用户这一点，不要说"无法操作设备"。]\n\n用户消息：${text}`;
                     this.addDebugLog(`[I2C] 已达极限，跳过命令，注入AI: ${ctrlLabel}=${cur}`);
                 } else {
@@ -559,6 +564,10 @@ class SpeechAIApp {
         // DOM 引用
         this.brightnessSlider = document.getElementById('brightnessSlider');
         this.contrastSlider   = document.getElementById('contrastSlider');
+        this.colorTempSlider  = document.getElementById('colorTempSlider');
+        this.colorTempValue   = document.getElementById('colorTempValue');
+        this.gammaSlider      = document.getElementById('gammaSlider');
+        this.gammaValue       = document.getElementById('gammaValue');
         this.brightnessValue = document.getElementById('brightnessValue');
         this.contrastValue   = document.getElementById('contrastValue');
         this.adbCheckBtn     = document.getElementById('adbCheckBtn');
@@ -614,8 +623,33 @@ class SpeechAIApp {
                 this.contrastValue.textContent = val;
             });
             this.contrastSlider.addEventListener('change', () => {
+                if (this.displayType === 'native') return; // 内置屏幕不支持对比度，静默忽略
                 const val = parseInt(this.contrastSlider.value);
                 this.executeI2cCommand('contrast', val);
+            });
+        }
+
+        // 色温滑块
+        if (this.colorTempSlider) {
+            this.colorTempSlider.addEventListener('input', () => {
+                const val = parseInt(this.colorTempSlider.value);
+                this.colorTempValue.textContent = val;
+            });
+            this.colorTempSlider.addEventListener('change', () => {
+                const val = parseInt(this.colorTempSlider.value);
+                this.executeI2cCommand('colorTemp', val);
+            });
+        }
+
+        // 伽马滑块
+        if (this.gammaSlider) {
+            this.gammaSlider.addEventListener('input', () => {
+                const val = parseInt(this.gammaSlider.value);
+                this.gammaValue.textContent = val;
+            });
+            this.gammaSlider.addEventListener('change', () => {
+                const val = parseInt(this.gammaSlider.value);
+                this.executeI2cCommand('gamma', val);
             });
         }
 
@@ -658,9 +692,27 @@ class SpeechAIApp {
         if (this.displayType === 'native') {
             this.adbSection.style.display = 'none';
             this.nativeSection.style.display = 'flex';
+            // 内置屏幕不支持对比度，禁用滑块
+            if (this.contrastSlider) {
+                this.contrastSlider.disabled = true;
+                this.contrastSlider.style.opacity = '0.4';
+                this.contrastSlider.title = '内置屏幕不支持对比度';
+            }
+            if (this.contrastValue) {
+                this.contrastValue.textContent = '—';
+                this.contrastValue.style.color = '#8e8e93';
+            }
         } else {
             this.adbSection.style.display = 'flex';
             this.nativeSection.style.display = 'none';
+            if (this.contrastSlider) {
+                this.contrastSlider.disabled = false;
+                this.contrastSlider.style.opacity = '1';
+                this.contrastSlider.title = '';
+            }
+            if (this.contrastValue) {
+                this.contrastValue.style.color = '';
+            }
         }
     }
 
@@ -724,14 +776,63 @@ class SpeechAIApp {
      */
     async executeI2cCommand(controlName, value) {
         this.updateI2cStatus('executing');
-        this.addDebugLog(`[Display] 设置 ${controlName} = ${value}`);
+        this.addDebugLog(`[Display] set ${controlName}=${value} displayType=${this.displayType}`);
+
+        // colorTemp: ADB显示器走DDC/CI VCP 0x0B，内置屏幕走gamma ramp
+        if (controlName === 'colorTemp') {
+            if (this.displayType === 'adb') {
+                this.addDebugLog('[ColorTemp] → ADB DDC/CI path');
+                await this._executeAdbCommand(controlName, value);
+            } else {
+                this.addDebugLog('[ColorTemp] → Gamma ramp path');
+                await this._executeGammaCommand(controlName, value);
+            }
+            return;
+        }
+
+        // gamma: 仅内置屏幕支持，ADB显示器不支持（无标准DDC/CI gamma命令）
+        if (controlName === 'gamma') {
+            if (this.displayType === 'native') {
+                await this._executeGammaCommand(controlName, value);
+            } else {
+                this.appendI2cLog('伽马调节仅支持内置屏幕', true);
+                this.updateI2cStatus('error');
+            }
+            return;
+        }
 
         if (this.displayType === 'native') {
-            // 内置屏幕：WMI / DDC/CI
             await this._executeNativeCommand(controlName, value);
         } else {
-            // ADB 显示器：DDC/CI over ADB
             await this._executeAdbCommand(controlName, value);
+        }
+    }
+
+    async _executeGammaCommand(controlName, value) {
+        if (!this.nativeDisplay) {
+            this.nativeDisplay = new window.NativeDisplayClient();
+        }
+        try {
+            let result;
+            if (controlName === 'colorTemp') {
+                result = await this.nativeDisplay.setColorTemp(value);
+            } else if (controlName === 'gamma') {
+                result = await this.nativeDisplay.setGamma(value);
+            } else {
+                return;
+            }
+            if (result.success) {
+                this.addDebugLog(`[Gamma] ok ${controlName}=${value}`);
+                this.updateI2cStatus('connected');
+            } else {
+                this.addDebugLog(`[Gamma] fail: ${result.error}`);
+                this.appendI2cLog(`错误: ${result.error}`, true);
+                this.updateI2cStatus('error');
+            }
+        } catch (e) {
+            this.addDebugLog(`[Gamma] exception: ${e.message}`);
+            this.appendI2cLog(`异常: ${e.message}`, true);
+            this.updateI2cStatus('error');
         }
     }
 
@@ -746,10 +847,13 @@ class SpeechAIApp {
                 result = await this.nativeDisplay.setBrightness(value);
                 this.appendI2cLog(`[Native] 亮度=${value}%`);
             } else if (controlName === 'contrast') {
-                // 对比度走 DDC/CI（和 ADB 显示器相同）
-                result = await this._executeAdbCommand(controlName, value);
-                this.appendI2cLog(`[Native] 对比度=${value}%`);
-                return; // _executeAdbCommand 内部已处理状态更新
+                // 内置屏幕不支持对比度（DDC/CI 对比度需要显示器硬件支持，通常不可用）
+                this.appendI2cLog(`[Native] 对比度=—（内置屏幕不支持）`);
+                this.updateI2cStatus('connected');
+                return;
+            } else if (controlName === 'colorTemp') {
+                result = await this.nativeDisplay.setColorTemp(value);
+                this.appendI2cLog(`[Native] 色温=${value}`);
             } else {
                 this.updateI2cStatus('error');
                 return;
@@ -758,25 +862,20 @@ class SpeechAIApp {
             if (result.success) {
                 this.addDebugLog(`[Native] ✓ ${controlName}=${value} 成功`);
                 this.updateI2cStatus(this.nativeDisplay.connected ? 'connected' : 'disconnected');
-                // 回读确认：确保滑块与硬件真实值同步（WMI 可能静默失败）
-                const current = await this.nativeDisplay.getBrightness();
-                if (current != null) {
-                    const actual = Math.round(current);
-                    this.brightnessSlider.value = actual;
-                    this.brightnessValue.textContent = actual;
-                    this.addDebugLog(`[Native] 回读确认: 实际亮度=${actual}%`);
+                // 亮度设置后回读确认（WMI 可能静默失败）
+                if (controlName === 'brightness') {
+                    const current = await this.nativeDisplay.getBrightness();
+                    if (current != null) {
+                        const actual = Math.round(current);
+                        this.brightnessSlider.value = actual;
+                        this.brightnessValue.textContent = actual;
+                        this.addDebugLog(`[Native] 回读确认: 实际亮度=${actual}%`);
+                    }
                 }
             } else {
                 this.addDebugLog(`[Native] ✗ 失败: ${result.error}`);
                 this.appendI2cLog(`错误: ${result.error}`, true);
                 this.updateI2cStatus('error');
-                // 回读当前值同步 UI
-                const current = await this.nativeDisplay.getBrightness();
-                if (current != null) {
-                    const actual = Math.round(current);
-                    this.brightnessSlider.value = actual;
-                    this.brightnessValue.textContent = actual;
-                }
             }
         } catch (e) {
             this.addDebugLog(`[Native] ✗ 异常: ${e.message}`);
@@ -787,6 +886,12 @@ class SpeechAIApp {
 
     async _executeAdbCommand(controlName, value) {
         if (!this.i2c) return;
+
+        // 色温：ADB 显示器尝试 DDC/CI VCP 0x0B（部分显示器支持）
+        if (controlName === 'colorTemp') {
+            await this._executeAdbDdcCi(controlName, value);
+            return;
+        }
 
         try {
             const cmdInfo = buildDdcCiCommand(
@@ -801,6 +906,36 @@ class SpeechAIApp {
         } catch (e) {
             this.addDebugLog(`[ADB] ✗ 失败: ${e.message}`);
             this.appendI2cLog(`错误: ${e.message}`, true);
+            this.updateI2cStatus('error');
+        }
+    }
+
+    async _executeAdbDdcCi(controlName, value) {
+        const vcpCode = I2C_CONFIG.VCP_CODES[controlName] || 0x10;
+        const { bytes, cmdStr, toHex } = buildDdcCiCommand(vcpCode, value);
+        this.appendI2cLog(`[DDC/CI] ${cmdStr}`);
+        try {
+            const resp = await fetch(`${I2C_CONFIG.apiPrefix}/i2cset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'i2cset',
+                    args: ['-y', '-f', String(I2C_CONFIG.bus),
+                        ...bytes.map(b => '0x' + toHex(b)), 'i'],
+                }),
+            });
+            const result = await resp.json();
+            if (result.success) {
+                this.addDebugLog(`[DDC/CI] ok ${controlName}=${value}`);
+                this.updateI2cStatus('connected');
+            } else {
+                this.addDebugLog(`[DDC/CI] fail: ${result.error}`);
+                this.appendI2cLog(`错误: ${result.error}`, true);
+                this.updateI2cStatus('error');
+            }
+        } catch (e) {
+            this.addDebugLog(`[DDC/CI] exception: ${e.message}`);
+            this.appendI2cLog(`异常: ${e.message}`, true);
             this.updateI2cStatus('error');
         }
     }
@@ -822,6 +957,19 @@ class SpeechAIApp {
                 if (result.brightness != null) {
                     this.brightnessSlider.value = result.brightness;
                     this.brightnessValue.textContent = result.brightness;
+                }
+                // 从 GPU 曲线读取当前 gamma 和色温，同步滑块
+                const ramp = await this.nativeDisplay.getGamma();
+                if (ramp && !ramp.error) {
+                    if (ramp.gamma != null) {
+                        this.gammaSlider.value = ramp.gamma;
+                        this.gammaValue.textContent = ramp.gamma;
+                    }
+                    if (ramp.colorTemp != null) {
+                        this.colorTempSlider.value = ramp.colorTemp;
+                        this.colorTempValue.textContent = ramp.colorTemp;
+                    }
+                    this.addDebugLog(`[Native] 曲线读取: gamma=${ramp.gamma}(${ramp.gammaVal}) colorTemp=${ramp.colorTemp}`);
                 }
             } else {
                 this.nativeDeviceInfo.textContent = `❌ ${result.error || '不可用'}`;
@@ -863,8 +1011,11 @@ class SpeechAIApp {
         const intent = this.i2c.parseVoiceCommand(text);
         if (!intent) return null;
 
-        // 内置屏幕不支持电源控制（WMI 无此接口）
+        // 内置屏幕不支持电源控制和对比度（WMI 无此接口）
         if (this.displayType === 'native' && intent.control === 'powerMode') {
+            return null; // 静默忽略
+        }
+        if (this.displayType === 'native' && intent.control === 'contrast') {
             return null; // 静默忽略
         }
 
@@ -881,13 +1032,19 @@ class SpeechAIApp {
                 return intent;
             }
 
-            // 亮度/对比度等 0-100 范围的控制 — 更新滑块 UI
+            // 亮度/对比度/色温 0-100 范围的控制 — 更新滑块 UI
             if (intent.control === 'brightness' && this.brightnessSlider) {
                 this.brightnessSlider.value = targetVal;
                 this.brightnessValue.textContent = targetVal;
             } else if (intent.control === 'contrast' && this.contrastSlider) {
                 this.contrastSlider.value = targetVal;
                 this.contrastValue.textContent = targetVal;
+            } else if (intent.control === 'colorTemp' && this.colorTempSlider) {
+                this.colorTempSlider.value = targetVal;
+                this.colorTempValue.textContent = targetVal;
+            } else if (intent.control === 'gamma' && this.gammaSlider) {
+                this.gammaSlider.value = targetVal;
+                this.gammaValue.textContent = targetVal;
             }
 
             this.addDebugLog(`[I2C] 🖥️ [${intent.control}] → ${targetVal}%，已同步滑块`);
@@ -895,7 +1052,11 @@ class SpeechAIApp {
             this.executeI2cCommand(intent.control, targetVal);
 
         } else if (intent.action === 'adjust') {
-            const slider = intent.control === 'brightness' ? this.brightnessSlider : this.contrastSlider;
+            let slider;
+            if (intent.control === 'brightness') slider = this.brightnessSlider;
+            else if (intent.control === 'contrast') slider = this.contrastSlider;
+            else if (intent.control === 'colorTemp') slider = this.colorTempSlider;
+            else if (intent.control === 'gamma') slider = this.gammaSlider;
             if (!slider) return intent;
 
             let current = parseInt(slider.value) ?? 50;
@@ -915,9 +1076,13 @@ class SpeechAIApp {
                 this.brightnessValue.textContent = targetVal;
             } else if (intent.control === 'contrast' && this.contrastValue) {
                 this.contrastValue.textContent = targetVal;
+            } else if (intent.control === 'colorTemp' && this.colorTempValue) {
+                this.colorTempValue.textContent = targetVal;
+            } else if (intent.control === 'gamma' && this.gammaValue) {
+                this.gammaValue.textContent = targetVal;
             }
 
-            this.addDebugLog(`[I2C] 🖥️ [${intent.control}] ${direction} ${targetVal}%，已同步滑块`);
+            this.addDebugLog(`[I2C] 🖥️ [${intent.control}] ${direction} ${targetVal}，已同步滑块`);
             this.executeI2cCommand(intent.control, targetVal);
         }
 

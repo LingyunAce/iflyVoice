@@ -37,6 +37,8 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # 类级别状态：存储最后一次设置的色温/伽马值（读取时直接返回，而非从GPU估算）
+    _native_state = {"colorTemp": 50, "gamma": 50}
     protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt, *args):
@@ -412,6 +414,33 @@ class Handler(BaseHTTPRequestHandler):
             self._native_set_contrast(body)
             return
 
+        if path == "/native/color_temp" and method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl <= 0:
+                return self._send_json(400, {"success": False, "error": "Missing body"})
+            try:
+                body = json.loads(self.rfile.read(cl).decode("utf-8"))
+            except Exception as e:
+                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
+            self._native_set_color_temp(body)
+            return
+
+        if path == "/native/gamma" and method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl <= 0:
+                return self._send_json(400, {"success": False, "error": "Missing body"})
+            try:
+                body = json.loads(self.rfile.read(cl).decode("utf-8"))
+            except Exception as e:
+                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
+            self._native_set_gamma(body)
+            return
+
+        # GET /native/gamma → 读取当前 gamma 曲线，估算 gamma 值和色温
+        if path == "/native/gamma" and method == "GET":
+            self._native_get_gamma()
+            return
+
         self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {path}"})
 
     def _native_status(self):
@@ -487,6 +516,149 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._send_json(200, {"success": False, "error": out})
         except Exception as e:
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    # ── 内部：构建并应用 gamma ramp ────────────────────────────────
+    def _apply_gamma_ramp(self, gamma_val, r_gain=255, g_gain=255, b_gain=255):
+        """构建 gamma ramp 并写入显卡，返回 True/False"""
+        import ctypes
+        from ctypes import windll, byref, c_uint16, Structure
+
+        class GAMMARAMP(Structure):
+            _fields_ = [
+                ("Red",   c_uint16 * 256),
+                ("Green", c_uint16 * 256),
+                ("Blue",  c_uint16 * 256),
+            ]
+
+        gamma = GAMMARAMP()
+        for i in range(256):
+            x = i / 255.0
+            r = min(255, int((x ** gamma_val) * r_gain))
+            g = min(255, int((x ** gamma_val) * g_gain))
+            b = min(255, int((x ** gamma_val) * b_gain))
+            gamma.Red[i]   = min(65535, r * 257)
+            gamma.Green[i] = min(65535, g * 257)
+            gamma.Blue[i]  = min(65535, b * 257)
+
+        user32 = windll.user32
+        gdi32  = windll.gdi32
+        dm = user32.GetDesktopWindow()
+        dc = user32.GetDC(dm)
+        result = 0
+        if dc:
+            result = gdi32.SetDeviceGammaRamp(dc, byref(gamma))
+            user32.ReleaseDC(dm, dc)
+        if not result:
+            dc2 = user32.GetDC(0)
+            if dc2:
+                result = gdi32.SetDeviceGammaRamp(dc2, byref(gamma))
+                user32.ReleaseDC(0, dc2)
+        return result
+
+    # ── 伽马调节（独立接口，不影响色温）─────────────────────────────
+    def _native_set_gamma(self, body):
+        """通过 SetDeviceGammaRamp 调节伽马曲线
+        value 0-100: 0=gamma 2.5(暗), 50=gamma 1.0(标准), 100=gamma 0.5(亮)
+        仅调节灰阶曲线，不改变颜色色温
+        """
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+        # 0→2.5, 50→1.0, 100→0.5
+        gamma_val = 2.5 - (value / 100.0 * 2.0)
+
+        try:
+            result = self._apply_gamma_ramp(gamma_val)
+            if result:
+                Handler._native_state["gamma"] = value
+                self._send_json(200, {"success": True, "gamma": value, "gammaVal": round(gamma_val, 2)})
+            else:
+                self._send_json(200, {"success": False, "error": "SetDeviceGammaRamp failed"})
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[Native] 伽马设置异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _native_get_gamma(self):
+        """直接返回缓存的色温/伽马值（比从 GPU 估算更准确）"""
+        # 直接返回缓存值，不再从 GPU 估算（从 gamma ramp 反推色温/gamma 值误差大）
+        self._send_json(200, {
+            "gamma": Handler._native_state["gamma"],
+            "colorTemp": Handler._native_state["colorTemp"],
+        })
+
+    def _native_set_color_temp(self, body):
+        """通过 SetDeviceGammaRamp 设置色温（软件模拟）
+        value 0-100: 0=最暖(2700K偏黄), 100=最冷(6500K偏蓝)
+        使用 RGB gamma ramp 曲线调整实现色温偏移
+        """
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+
+        try:
+            import ctypes
+            from ctypes import windll, byref, c_uint16, Structure
+            import math
+
+            class GAMMARAMP(Structure):
+                _fields_ = [
+                    ("Red",   c_uint16 * 256),
+                    ("Green", c_uint16 * 256),
+                    ("Blue",  c_uint16 * 256),
+                ]
+
+            t = value / 100.0
+
+            # 色温映射：0=最暖(R强G中B弱)，100=最冷(R弱G中B强)
+            r_gain = 255 - int(t * 75)   # 255→180
+            g_gain = 180 + int(t * 20)   # 180→200
+            b_gain = 100 + int(t * 155)  # 100→255
+
+            # Gamma 值
+            gamma_val_r = 1.0
+            gamma_val_g = 1.0
+            gamma_val_b = 1.0 + t * 0.25
+
+            gamma = GAMMARAMP()
+            for i in range(256):
+                x = i / 255.0
+                def rg(v, gv, g):
+                    return min(255, int((v ** gv) * g))
+                r = rg(x, gamma_val_r, r_gain)
+                g = rg(x, gamma_val_g, g_gain)
+                b = rg(x, gamma_val_b, b_gain)
+                # Windows gamma ramp 用 0-65535 范围（16bit）
+                gamma.Red[i]   = min(65535, r * 257)
+                gamma.Green[i] = min(65535, g * 257)
+                gamma.Blue[i]  = min(65535, b * 257)
+
+            user32 = windll.user32
+            gdi32  = windll.gdi32
+
+            # 方式1：DC from GetDesktopWindow（可能被系统限权）
+            dm = user32.GetDesktopWindow()
+            dc = user32.GetDC(dm)
+            result = 0
+            if dc:
+                result = gdi32.SetDeviceGammaRamp(dc, byref(gamma))
+                user32.ReleaseDC(dm, dc)
+
+            if not result:
+                # 方式2：直接用 GetDC(0) 获取整个屏幕 DC
+                dc2 = user32.GetDC(0)
+                if dc2:
+                    result = gdi32.SetDeviceGammaRamp(dc2, byref(gamma))
+                    user32.ReleaseDC(0, dc2)
+
+            if result:
+                Handler._native_state["colorTemp"] = value
+                self._send_json(200, {"success": True, "colorTemp": value})
+            else:
+                err = ctypes.get_last_error()
+                self._send_json(200, {"success": False, "error": f"SetDeviceGammaRamp failed (err={err}). 尝试以管理员身份运行 server.py。"})
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[Native] 色温设置异常: {e}\n{traceback.format_exc()}\n")
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _send_json(self, code, payload):

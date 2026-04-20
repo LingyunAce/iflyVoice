@@ -132,6 +132,12 @@
                 <div class="slider-marks">
                     <span>0</span><span>50</span><span>100</span>
                 </div>
+                <!-- 快捷操作按钮 -->
+                <div class="quick-actions">
+                    <button class="monitor-btn" data-action="brightness" data-value="0">&#127769; 最暗</button>
+                    <button class="monitor-btn" data-action="brightness" data-value="50">&#128161; 中等</button>
+                    <button class="monitor-btn" data-action="brightness" data-value="100">&#9728;&#xFE0F; 最亮</button>
+                </div>
             </div>
 
             <!-- 对比度控制 -->
@@ -147,13 +153,31 @@
                 </div>
             </div>
 
-            <!-- 快捷操作按钮 -->
-            <div class="quick-actions">
-                <button class="monitor-btn" data-action="brightness" data-value="0">&#127769; 最暗</button>
-                <button class="monitor-btn" data-action="brightness" data-value="50">&#128161; 中等</button>
-                <button class="monitor-btn" data-action="brightness" data-value="100">&#9728;&#xFE0F; 最亮</button>
-
+            <!-- 色温控制 -->
+            <div class="control-section">
+                <div class="control-label-row">
+                    <label class="control-label">&#127775; 色温</label>
+                    <span id="colorTempValue" class="control-value">50</span>
+                </div>
+                <input type="range" id="colorTempSlider" class="control-slider color-temp-slider"
+                       min="0" max="100" value="50" title="0=最暖(偏黄)，100=最冷(偏蓝)">
+                <div class="slider-marks">
+                    <span>&#127774; 暖</span><span>50</span><span>&#127752; 冷</span>
+                </div>
             </div>
+
+            <div class="control-section">
+                <div class="control-label-row">
+                    <label class="control-label">&#9680; 伽马</label>
+                    <span id="gammaValue" class="control-value">50</span>
+                </div>
+                <input type="range" id="gammaSlider" class="control-slider gamma-slider"
+                       min="0" max="100" value="50" title="0=最暗(gamma 2.5)，50=标准(gamma 1.0)，100=最亮(gamma 0.5)">
+                <div class="slider-marks">
+                    <span>&#9681; 暗</span><span>50</span><span>&#9680; 亮</span>
+                </div>
+            </div>
+
 
             <!-- 最近命令日志 -->
             <details class="cmd-details">
