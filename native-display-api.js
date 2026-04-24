@@ -117,6 +117,30 @@ class NativeDisplayClient {
         const resp = await fetch(`${NATIVE_CONFIG.apiPrefix}/gamma`);
         return await resp.json();
     }
+
+    /**
+     * 关闭显示器（息屏），模拟电源键行为
+     * 调用后显示器立即熄灭，移动鼠标或按键盘可唤醒
+     */
+    async setPowerOff() {
+        const resp = await fetch(`${NATIVE_CONFIG.apiPrefix}/power`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({}),
+        });
+        return await resp.json();
+    }
+
+    /**
+     * 通过 sendBeacon 发送息屏请求（同步发送，不给浏览器触发显示唤醒的机会）
+     * 注意：不等待响应
+     */
+    powerOffBeacon() {
+        const url = `${NATIVE_CONFIG.apiPrefix}/power`;
+        const blob = new Blob([JSON.stringify({})], { type: 'application/json' });
+        // sendBeacon 会在页面生命周期内可靠地发送，即使页面正在卸载
+        navigator.sendBeacon(url, blob);
+    }
 }
 
 

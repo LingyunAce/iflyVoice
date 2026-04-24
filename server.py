@@ -441,6 +441,10 @@ class Handler(BaseHTTPRequestHandler):
             self._native_get_gamma()
             return
 
+        if path == "/native/power" and method == "POST":
+            self._native_power_off()
+            return  # ← 关键：必须 return，否则会继续走到下面的 404
+
         self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {path}"})
 
     def _native_status(self):
@@ -586,6 +590,26 @@ class Handler(BaseHTTPRequestHandler):
             "gamma": Handler._native_state["gamma"],
             "colorTemp": Handler._native_state["colorTemp"],
         })
+
+    def _native_power_off(self):
+        """关闭内置显示器（息屏），模拟电源键行为。
+        只发 SC_MONITORPOWER=2 消息，不锁屏，不防抖。
+        与 curl 命令行为完全一致。
+        """
+        try:
+            import ctypes
+            from ctypes import windll
+            user32 = windll.user32
+            HW_BROADCAST = 0xFFFF
+            WM_SYSCOMMAND = 0x0112
+            SC_MONITORPOWER = 0xF170
+            user32.SendMessageW(HW_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
+            sys.stderr.write(f"[Native] 息屏完成\n")
+            self._send_json(200, {"success": True, "action": "screen_off"})
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[Native] 息屏异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
 
     def _native_set_color_temp(self, body):
         """通过 SetDeviceGammaRamp 设置色温（软件模拟）

@@ -573,6 +573,7 @@ class SpeechAIApp {
         this.adbCheckBtn     = document.getElementById('adbCheckBtn');
         this.adbDeviceInfo   = document.getElementById('adbDeviceInfo');
         this.nativeCheckBtn  = document.getElementById('nativeCheckBtn');
+        this.nativePowerBtn  = document.getElementById('nativePowerBtn');
         this.nativeDeviceInfo = document.getElementById('nativeDeviceInfo');
         this.i2cStatusDot    = document.getElementById('i2cStatusDot');
         this.i2cStatusText   = document.getElementById('i2cStatusText');
@@ -661,6 +662,11 @@ class SpeechAIApp {
         // 内置屏幕检测按钮
         if (this.nativeCheckBtn) {
             this.nativeCheckBtn.addEventListener('click', () => this.checkNativeConnection());
+        }
+
+        // 息屏按钮
+        if (this.nativePowerBtn) {
+            this.nativePowerBtn.addEventListener('click', () => this._handleNativePowerOff());
         }
 
         // 快捷按钮
@@ -938,6 +944,26 @@ class SpeechAIApp {
             this.appendI2cLog(`异常: ${e.message}`, true);
             this.updateI2cStatus('error');
         }
+    }
+
+    /** 息屏：调用 Windows API 关闭显示器 */
+    async _handleNativePowerOff() {
+        if (this._powerOffInProgress) return;
+        this._powerOffInProgress = true;
+
+        if (this.nativePowerBtn) this.nativePowerBtn.disabled = true;
+
+        // 用 sendBeacon 发送，同步执行，不给浏览器触发显示唤醒的机会
+        if (!this.nativeDisplay) {
+            this.nativeDisplay = new window.NativeDisplayClient();
+        }
+        this.nativeDisplay.powerOffBeacon();
+
+        // 息屏后 2 秒恢复按钮
+        setTimeout(() => {
+            if (this.nativePowerBtn) this.nativePowerBtn.disabled = false;
+            this._powerOffInProgress = false;
+        }, 2000);
     }
 
     async checkNativeConnection() {
