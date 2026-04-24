@@ -12,6 +12,7 @@ import sys
 import json
 import socket
 import subprocess
+import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -23,7 +24,7 @@ STATIC_DIR = os.path.dirname(os.path.abspath(__file__)) or "."
 # ── 火山引擎（豆包）云端模型配置 ──
 VOLCENGINE_CONFIG = {
     "api_base": "https://ark.cn-beijing.volces.com/api/v3",  # 火山引擎 OpenAI 兼容端点
-    "api_key": "dee5eff8-f907-442a-aad4-7caf1f684740",
+    "api_key": os.environ.get("VOLCENGINE_API_KEY", ""),
     # coding-plan 对应的模型 endpoint ID（用户需要在火山引擎控制台确认）
     # 格式：ep-xxxxxxxxx 或直接用模型名
     "default_model": "doubao-1-5-pro-32k-250115",
@@ -38,7 +39,9 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     # 类级别状态：存储最后一次设置的色温/伽马值（读取时直接返回，而非从GPU估算）
+    # 用锁保护，避免多线程并发访问时互相覆盖
     _native_state = {"colorTemp": 50, "gamma": 50}
+    _state_lock = threading.Lock()
     protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt, *args):
@@ -574,7 +577,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             result = self._apply_gamma_ramp(gamma_val)
             if result:
-                Handler._native_state["gamma"] = value
+                with Handler._state_lock:
+                    Handler._native_state["gamma"] = value
                 self._send_json(200, {"success": True, "gamma": value, "gammaVal": round(gamma_val, 2)})
             else:
                 self._send_json(200, {"success": False, "error": "SetDeviceGammaRamp failed"})
@@ -585,10 +589,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _native_get_gamma(self):
         """直接返回缓存的色温/伽马值（比从 GPU 估算更准确）"""
-        # 直接返回缓存值，不再从 GPU 估算（从 gamma ramp 反推色温/gamma 值误差大）
+        with Handler._state_lock:
+            state = dict(Handler._native_state)
         self._send_json(200, {
-            "gamma": Handler._native_state["gamma"],
-            "colorTemp": Handler._native_state["colorTemp"],
+            "gamma": state["gamma"],
+            "colorTemp": state["colorTemp"],
         })
 
     def _native_power_off(self):
@@ -675,7 +680,8 @@ class Handler(BaseHTTPRequestHandler):
                     user32.ReleaseDC(0, dc2)
 
             if result:
-                Handler._native_state["colorTemp"] = value
+                with Handler._state_lock:
+                    Handler._native_state["colorTemp"] = value
                 self._send_json(200, {"success": True, "colorTemp": value})
             else:
                 err = ctypes.get_last_error()

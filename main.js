@@ -900,13 +900,11 @@ class SpeechAIApp {
         }
 
         try {
-            const cmdInfo = buildDdcCiCommand(
-                I2C_CONFIG.VCP_CODES[controlName] || 0x10,
-                controlName === 'powerMode' ? value : value
-            );
-            this.appendI2cLog(cmdInfo.cmdStr);
-
             const result = await this.i2c.setControl(controlName, value);
+            // setControl 内部已构建命令，直接用 lastCommand 写日志，避免重复构建
+            if (this.i2c.lastCommand) {
+                this.appendI2cLog(this.i2c.lastCommand.cmdStr);
+            }
             this.addDebugLog(`[ADB] ✓ ${controlName}=${value} 成功`);
             this.updateI2cStatus(this.i2c.connected ? 'connected' : 'disconnected');
         } catch (e) {
