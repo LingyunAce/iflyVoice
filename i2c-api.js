@@ -235,11 +235,11 @@ class I2cController {
             return { action: 'set', control: 'brightness', value: 0 };
         }
 
-        // 亮度模糊指令
-        if (/亮度.*调高|(屏幕|显示器).*亮一点|更亮|增加亮度/.test(t)) {
+        // 亮度模糊指令：支持 调高/提高/升高/增加/加大/亮一点/更亮 等增，及其对应的减
+        if (/(?:亮度|屏幕|显示器)?.*(?:调高|提高|升高|增加|加大|亮一点|更亮)|更亮|变亮/.test(t)) {
             return { action: 'adjust', control: 'brightness', delta: +10 };
         }
-        if (/亮度.*调低|(屏幕|显示器).*暗一点|更暗|降低亮度/.test(t)) {
+        if (/(?:亮度|屏幕|显示器)?.*(?:调低|降低|减小|减弱|暗一点|更暗)|更暗|变暗/.test(t)) {
             return { action: 'adjust', control: 'brightness', delta: -10 };
         }
 
@@ -264,10 +264,11 @@ class I2cController {
             return { action: 'set', control: 'contrast', value: 0 };
         }
 
-        if (/对比度.*调高|增加对比度/.test(t)) {
+        // 对比度模糊指令
+        if (/(?:对比度|).*(?:调高|提高|升高|增加|加大)/.test(t)) {
             return { action: 'adjust', control: 'contrast', delta: +10 };
         }
-        if (/对比度.*调低|降低对比度/.test(t)) {
+        if (/(?:对比度|).*(?:调低|降低|减小|减弱)/.test(t)) {
             return { action: 'adjust', control: 'contrast', delta: -10 };
         }
 
@@ -287,18 +288,18 @@ class I2cController {
         }
 
         // 色温极值
-        if (/色温.*(?:最高|最冷|最高)/.test(t)) {
+        if (/色温.*(?:最高|最冷)/.test(t)) {
             return { action: 'set', control: 'colorTemp', value: 100 };
         }
         if (/色温.*(?:最低|最暖|暖一点|偏黄)/.test(t)) {
             return { action: 'set', control: 'colorTemp', value: 0 };
         }
 
-        // 色温模糊指令
-        if (/色温.*调高|更冷|偏蓝|冷一点/.test(t)) {
+        // 色温模糊指令：调高/提高/升高/降低/减弱/冷一点/暖一点 等表述
+        if (/色温.*(?:调高|提高|升高|增强)|更冷|偏蓝|冷一点/.test(t)) {
             return { action: 'adjust', control: 'colorTemp', delta: +10 };
         }
-        if (/色温.*调低|更暖|偏黄|暖一点/.test(t)) {
+        if (/色温.*(?:调低|降低|减小|减弱)|更暖|偏黄|暖一点/.test(t)) {
             return { action: 'adjust', control: 'colorTemp', delta: -10 };
         }
 
