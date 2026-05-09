@@ -235,11 +235,11 @@ class I2cController {
             return { action: 'set', control: 'brightness', value: 0 };
         }
 
-        // 亮度模糊指令：支持 调高/提高/升高/增加/加大/亮一点/更亮 等增，及其对应的减
-        if (/(?:亮度|屏幕|显示器)?.*(?:调高|提高|升高|增加|加大|亮一点|更亮)|更亮|变亮/.test(t)) {
+        // 亮度模糊指令（需含亮度/屏幕/显示器关键字）
+        if (/(?:亮度|屏幕|显示器).*(?:增高|调高|提高|升高|增加|加大|亮一点|更亮|变亮|再亮点|稍微亮点|亮一些|稍亮点|调亮一点)/i.test(t)) {
             return { action: 'adjust', control: 'brightness', delta: +10 };
         }
-        if (/(?:亮度|屏幕|显示器)?.*(?:调低|降低|减小|减弱|暗一点|更暗)|更暗|变暗/.test(t)) {
+        if (/(?:亮度|屏幕|显示器).*(?:调低|降低|减小|减弱|减少|暗一点|更暗|变暗|再暗点|稍微暗点|暗一些|稍暗点|调暗一点)/i.test(t)) {
             return { action: 'adjust', control: 'brightness', delta: -10 };
         }
 
@@ -264,11 +264,11 @@ class I2cController {
             return { action: 'set', control: 'contrast', value: 0 };
         }
 
-        // 对比度模糊指令
-        if (/(?:对比度|).*(?:调高|提高|升高|增加|加大)/.test(t)) {
+        // 对比度模糊指令（需含对比度关键字）
+        if (/对比度.*(?:增高|调高|提高|升高|增加|加大|增大|调大|高一点|高一些|对比度增大|对比度加大)/i.test(t)) {
             return { action: 'adjust', control: 'contrast', delta: +10 };
         }
-        if (/(?:对比度|).*(?:调低|降低|减小|减弱)/.test(t)) {
+        if (/对比度.*(?:调低|降低|减小|减弱|减少|低一点|低一些|对比度减小|对比度降低|对比度减弱)/i.test(t)) {
             return { action: 'adjust', control: 'contrast', delta: -10 };
         }
 
@@ -322,11 +322,11 @@ class I2cController {
         if (/(?:静音|mute)/i.test(t) || /音量.*(?:最低|最小|关掉)/.test(t)) {
             return { action: 'set', control: 'volume', value: 0 };
         }
-        if (/(?:音量).*(?:调高|提高|升高|增加|加大|大一点|大声点)|声音(大一点|大些)/.test(t)) {
-            return { action: 'adjust', control: 'volume', delta: +15 };
+        if (/音量.*(?:增高|调高|提高|升高|增加|加大|大一点|大声点|声音大点|声音大一些|音量增大|声音变大|增大|变大)|声音(?:大一点|大些|变大)/i.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: +10 };
         }
-        if (/(?:音量).*(?:调低|降低|减小|减弱|小一点|小声点)|声音(小一点|小些)/.test(t)) {
-            return { action: 'adjust', control: 'volume', delta: -15 };
+        if (/音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)/i.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: -10 };
         }
 
         return null;

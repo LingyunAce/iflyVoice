@@ -293,7 +293,7 @@ class SpeechAIApp {
         // ═══ 优化：亮度/对比度调节 → 立即回复，不等 Ollama ═══
         const QUICK_CONTROLS = ['brightness', 'contrast', 'volume'];
         if (i2cIntent && QUICK_CONTROLS.includes(i2cIntent.control)) {
-            const controlLabels = { brightness: '亮度', contrast: '对比度' };
+            const controlLabels = { brightness: '亮度', contrast: '对比度', volume: '音量' };
             const ctrlLabel = controlLabels[i2cIntent.control];
 
             if (i2cIntent.cannotAdjust) {
@@ -308,9 +308,11 @@ class SpeechAIApp {
                     msg = `好的，已将${ctrlLabel}设为 ${finalVal}%。`;
                 } else {
                     const dir = (i2cIntent.delta || 0) > 0 ? '调高' : '调低';
-                    finalVal = parseInt(
-                        (i2cIntent.control === 'brightness' ? this.brightnessSlider : this.contrastSlider)?.value ?? 50
-                    );
+                    let slider;
+                    if (i2cIntent.control === 'brightness') slider = this.brightnessSlider;
+                    else if (i2cIntent.control === 'contrast') slider = this.contrastSlider;
+                    else if (i2cIntent.control === 'volume') slider = this.volumeSlider;
+                    finalVal = parseInt(slider?.value ?? 50);
                     msg = `好的，已将${ctrlLabel}${dir}，当前 ${finalVal}%。`;
                 }
                 this._showImmediateReply(msg);
@@ -1212,7 +1214,17 @@ class SpeechAIApp {
             if (!slider) return intent;
 
             let current = parseInt(slider.value) ?? 50;
-            let targetVal = Math.max(0, Math.min(100, current + intent.delta));
+            let delta = intent.delta;
+            let targetVal = current + delta;
+            // 边界处理：调低时 current<=10 直接到0，调高时 current>=90 直接到100
+            if (intent.control === 'volume' || intent.control === 'brightness' || intent.control === 'contrast') {
+                if (delta < 0 && current <= 10) {
+                    targetVal = 0;
+                } else if (delta > 0 && current >= 90) {
+                    targetVal = 100;
+                }
+            }
+            targetVal = Math.max(0, Math.min(100, targetVal));
 
             // 检测是否已到极限，调不了
             if (targetVal === current) {
