@@ -17,8 +17,6 @@
                 <select id="micSelect" class="mic-select-inline" title="选择录音设备">
                     <option value="">正在检测设备...</option>
                 </select>
-                <!-- 固定模型：qwen3-vl:4b，地址已硬编码 192.168.1.32:11434 -->
-                <span class="model-badge">qwen3-vl:4b</span>
                 <button id="clearChatBtn" class="clear-btn" title="清空对话">&#128465;</button>
             </div>
         </div>
@@ -63,6 +61,23 @@
                 <span id="i2cStatusDot" class="status-dot status-dot-off"></span>
                 <span id="i2cStatusText" class="i2c-status-text">未连接</span>
                 <button id="exitBtn" class="exit-btn" title="退出">&#10006;</button>
+            </div>
+        </div>
+
+        <!-- 服务 URL 配置 -->
+        <div class="config-section">
+            <div class="config-header">&#9881; 服务URL配置</div>
+            <div class="config-row">
+                <label>Audio服务</label>
+                <input id="sensevoiceUrlInput" type="text" class="config-input" value="http://192.168.1.32:9997" placeholder="http://192.168.1.32:9997">
+            </div>
+            <div class="config-row">
+                <label>Ollama服务</label>
+                <input id="ollamaUrlInput" type="text" class="config-input" value="192.168.1.32:11434" placeholder="192.168.1.32:11434">
+            </div>
+            <div class="config-row">
+                <label>模型</label>
+                <input id="modelNameInput" type="text" class="config-input" value="qwen3-vl:4b" placeholder="qwen3-vl:4b">
             </div>
         </div>
 

@@ -638,6 +638,49 @@ body {
     white-space: nowrap;
 }
 
+/* ===== 服务URL配置栏目 ===== */
+.config-section {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.config-header {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.6);
+    margin-bottom: 8px;
+    letter-spacing: 0.5px;
+}
+.config-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+.config-row label {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.7);
+    width: 72px;
+    flex-shrink: 0;
+}
+.config-input {
+    flex: 1;
+    background: rgba(142, 142, 147, 0.15);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 6px;
+    color: rgba(255, 255, 255, 0.85);
+    padding: 4px 8px;
+    font-size: 11px;
+    outline: none;
+}
+.config-input:focus {
+    border-color: rgba(52, 199, 89, 0.5);
+    background: rgba(52, 199, 89, 0.08);
+}
+
+.model-input {
+    width: 100px;
+}
+
 /* ===== 显示器类型选择器 ===== */
 .display-type-sel {
     background: rgba(142, 142, 147, 0.15);

@@ -76,9 +76,9 @@ class SpeechAIApp {
         // 如果上一个正在生成，先中断
         if (this.aiClient) this.aiClient.abort();
 
-        // Ollama qwen3-vl:4b
+        const model = this.modelNameInput?.value?.trim() || 'qwen3-vl:4b';
         this.ollama = new OllamaClient({
-            model: 'qwen3-vl:4b',
+            model: model,
             onToken: (token, full) => {
                 this.updateStreamingBubble(full);
             },
@@ -92,6 +92,46 @@ class SpeechAIApp {
             },
         });
         this.aiClient = this.ollama;
+    }
+
+    /** 应用 Ollama URL + 模型变更 */
+    _applyOllamaUrl() {
+        const url = (this.ollamaUrlInput?.value || '').trim();
+        const model = (this.modelNameInput?.value || 'qwen3-vl:4b').trim();
+        if (!url) return;
+        // 提取 host:port
+        const colonIdx = url.lastIndexOf(':');
+        const host = url.substring(0, colonIdx);
+        const port = parseInt(url.substring(colonIdx + 1), 10);
+        if (host && port > 0) {
+            // 通知 server.py 更新 Ollama 配置
+            fetch('/config/ollama', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ host, port, model }),
+            }).then(r => r.json()).then(data => {
+                this.addDebugLog(`Ollama 已更新: ${host}:${port} / ${model}`);
+                // 用新模型重建 AI 客户端
+                this.createAiClient();
+            }).catch(e => {
+                this.addDebugLog(`Ollama 配置更新失败: ${e.message}`);
+            });
+        }
+    }
+
+    /** 应用语音识别服务 URL 变更 */
+    _applySensevoiceUrl() {
+        const url = (this.sensevoiceUrlInput?.value || '').trim();
+        if (!url) return;
+        fetch('/config/sensevoice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ base_url: url }),
+        }).then(r => r.json()).then(data => {
+            this.addDebugLog(`语音识别服务已更新: ${url}`);
+        }).catch(e => {
+            this.addDebugLog(`语音识别配置更新失败: ${e.message}`);
+        });
     }
 
     // ═══════════════════════════════════════
@@ -551,8 +591,22 @@ class SpeechAIApp {
         this.i2cCmdLog       = document.getElementById('i2cCmdLog');
         this.exitBtn         = document.getElementById('exitBtn');
         this.displayTypeSel  = document.getElementById('displayType');
+        this.ollamaUrlInput = document.getElementById('ollamaUrlInput');
+        this.modelNameInput  = document.getElementById('modelNameInput');
+        this.sensevoiceUrlInput = document.getElementById('sensevoiceUrlInput');
         // adbSection 已移除
         this.nativeSection   = document.getElementById('nativeSection');
+
+        // Ollama URL + 模型名称输入 — 实时生效
+        if (this.ollamaUrlInput) {
+            this.ollamaUrlInput.addEventListener('change', () => this._applyOllamaUrl());
+        }
+        if (this.modelNameInput) {
+            this.modelNameInput.addEventListener('change', () => this._applyOllamaUrl());
+        }
+        if (this.sensevoiceUrlInput) {
+            this.sensevoiceUrlInput.addEventListener('change', () => this._applySensevoiceUrl());
+        }
 
         // 显示器类型切换
         if (this.displayTypeSel) {

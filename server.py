@@ -56,6 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             import sys
             sys.exit(0)
             return
+        elif self.path.startswith("/config/"):
+            self._handle_config("GET")
         elif self.path.startswith("/ollama/"):
             self._proxy("GET")
         elif self.path.startswith("/i2c/"):
@@ -68,7 +70,9 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static()
 
     def do_POST(self):
-        if self.path.startswith("/ollama/"):
+        if self.path.startswith("/config/"):
+            self._handle_config("POST")
+        elif self.path.startswith("/ollama/"):
             self._proxy("POST")
         elif self.path.startswith("/i2c/"):
             self._handle_i2c()
@@ -372,6 +376,33 @@ class Handler(BaseHTTPRequestHandler):
             import traceback
             sys.stderr.write(f"[DDC/CI] /{endpoint} error: {e}\n{traceback.format_exc()}\n")
             self._send_json(500, {"success": False, "error": str(e)})
+
+    def _handle_config(self, method):
+        """处理 /config/* 动态配置路由"""
+        path = self.path.split("?")[0]
+        endpoint = path.replace("/config/", "", 1).strip("/")
+
+        body = {}
+        if method == "POST":
+            content_len = int(self.headers.get("Content-Length", 0))
+            if content_len > 0:
+                body = json.loads(self.rfile.read(content_len))
+
+        if endpoint == "ollama" and method == "POST":
+            host = body.get("host", "")
+            port = body.get("port", 11434)
+            model = body.get("model", "qwen3-vl:4b")
+            _OLLAMA_CONFIG["host"] = host
+            _OLLAMA_CONFIG["port"] = int(port)
+            sys.stderr.write(f"[Config] Ollama updated: {host}:{port} model={model}\n")
+            self._send_json(200, {"success": True, "host": host, "port": port, "model": model})
+        elif endpoint == "sensevoice" and method == "POST":
+            url = body.get("base_url", "")
+            Handler.SENSEVOICE_CONFIG["base_url"] = url
+            sys.stderr.write(f"[Config] SenseVoice updated: {url}\n")
+            self._send_json(200, {"success": True, "base_url": url})
+        else:
+            self._send_json(404, {"success": False, "error": f"Unknown config: {endpoint}"})
 
     @staticmethod
     def _get_physical_monitor():
