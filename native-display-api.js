@@ -110,6 +110,33 @@ class NativeDisplayClient {
     }
 
     /**
+     * 设置系统音量（0-100）
+     */
+    async setVolume(value) {
+        const val = Math.max(0, Math.min(100, Math.round(value)));
+        const resp = await fetch(`${NATIVE_CONFIG.apiPrefix}/volume`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: val }),
+        });
+        return await resp.json();
+    }
+
+    /**
+     * 读取当前系统音量
+     * @returns {Promise<number|null>} 0-100 或 null
+     */
+    async getVolume() {
+        try {
+            const resp = await fetch(`${NATIVE_CONFIG.apiPrefix}/volume`);
+            const data = await resp.json();
+            return data.volume ?? null;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
      * 读取当前 gamma 和色温（从 GPU 曲线估算）
      * @returns {Promise<{gamma: number, colorTemp: number, gammaVal: number, error?: string}>}
      */

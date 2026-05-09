@@ -29,16 +29,9 @@ body {
     min-width: 0;
 }
 
-.panel-left {
-    max-width: 420px;
-    margin-right: 12px;
-    padding: 24px;
-    gap: 16px;
-    overflow-y: auto;
-}
-
+/* 左侧面板已删除，主面板占满可用空间 */
 .panel-right {
-    flex: 2;
+    flex: 1;
     min-width: 0;
     overflow: hidden;
 }
@@ -111,6 +104,43 @@ body {
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 12px;
     padding: 14px 16px;
+}
+
+/* ===== 麦克风选择器 ===== */
+.mic-select-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.mic-label {
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.5);
+    white-space: nowrap;
+}
+
+.mic-select {
+    flex: 1;
+    background: rgba(255, 255, 255, 0.08);
+    color: #e0e0e0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.mic-select:hover,
+.mic-select:focus {
+    border-color: rgba(74, 144, 226, 0.5);
+}
+
+.mic-select option {
+    background: #2a2a2d;
+    color: #e0e0e0;
 }
 
 /* ===== 状态栏 ===== */
@@ -566,6 +596,48 @@ body {
     color: #e0e0e0;
 }
 
+/* ===== Ollama 服务器地址输入框 ===== */
+.ollama-host-input {
+    background: rgba(52, 199, 89, 0.08);
+    color: #34c759;
+    border: 1px solid rgba(52, 199, 89, 0.3);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 11px;
+    width: 90px;
+    outline: none;
+    font-family: monospace;
+}
+.ollama-host-input:focus {
+    border-color: rgba(52, 199, 89, 0.6);
+}
+.ollama-port-input {
+    background: rgba(52, 199, 89, 0.08);
+    color: #34c759;
+    border: 1px solid rgba(52, 199, 89, 0.3);
+    border-radius: 6px;
+    padding: 3px 6px;
+    font-size: 11px;
+    width: 52px;
+    outline: none;
+    font-family: monospace;
+}
+.ollama-port-input:focus {
+    border-color: rgba(52, 199, 89, 0.6);
+}
+
+/* ===== 固定模型标签 ===== */
+.model-badge {
+    background: rgba(52, 199, 89, 0.15);
+    color: #34c759;
+    border: 1px solid rgba(52, 199, 89, 0.35);
+    border-radius: 8px;
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
 /* ===== 显示器类型选择器 ===== */
 .display-type-sel {
     background: rgba(142, 142, 147, 0.15);
@@ -648,14 +720,14 @@ body {
         background: linear-gradient(135deg, #1c1c1e 0%, #2c2c2e 100%);
     }
 
-    .panel-left {
-        max-width: 100%;
-        margin-right: 0;
-        margin-bottom: 12px;
-    }
-
     .panel-right {
         min-height: 500px;
+    }
+
+    .panel-monitor {
+        width: 100%;
+        margin-left: 0;
+        margin-top: 12px;
     }
 }
 
@@ -814,6 +886,22 @@ body {
     cursor: not-allowed;
 }
 
+.exit-btn {
+    background: rgba(255, 71, 87, 0.12);
+    border: 1px solid rgba(255, 71, 87, 0.3);
+    color: #ff6b7a;
+    font-size: 16px;
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.exit-btn:hover {
+    background: rgba(255, 71, 87, 0.22);
+    border-color: rgba(255, 71, 87, 0.5);
+}
+
 /* ── ADB 设备区 ── */
 .adb-section {
     display: flex;
@@ -899,4 +987,126 @@ body {
     word-break: break-all;
     border-top: 1px solid rgba(255, 255, 255, 0.06);
     margin: 0;
+}
+
+/* ===== 识别结果预览区（已删除左侧面板，保留样式防报错） ===== */
+.result-preview {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 12px 14px;
+    min-height: 60px;
+    font-size: 13px;
+    line-height: 1.6;
+    color: rgba(255, 255, 255, 0.5);
+}
+
+.preview-placeholder {
+    color: rgba(255, 255, 255, 0.25);
+    font-style: italic;
+    font-size: 12px;
+}
+
+.result-preview.has-result {
+    color: #e8eaf6;
+    border-color: rgba(142, 142, 147, 0.3);
+}
+
+/* ===== 语音输入按钮（右侧发送按钮旁） ===== */
+.voice-input-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: linear-gradient(135deg, #4a4a4d, #636366);
+    color: white;
+    border: none;
+    border-radius: 10px;
+    padding: 9px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.25s ease;
+    white-space: nowrap;
+    user-select: none;
+}
+
+.voice-input-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 16px rgba(99, 99, 102, 0.5);
+}
+
+.voice-input-btn:active:not(:disabled) {
+    transform: scale(0.96);
+}
+
+.voice-input-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+.voice-input-btn.recording {
+    background: linear-gradient(135deg, #ff4757, #ff2d3a);
+    box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.6);
+    animation: voiceRecordPulse 1s ease-in-out infinite;
+}
+
+@keyframes voiceRecordPulse {
+    0% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0.6); }
+    70% { box-shadow: 0 0 0 18px rgba(255, 71, 87, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(255, 71, 87, 0); }
+}
+
+.voice-icon {
+    font-size: 15px;
+    line-height: 1;
+}
+
+.voice-text {
+    font-size: 12px;
+    letter-spacing: 0.3px;
+}
+
+/* ===== 麦克风内联选择器（右侧头部） ===== */
+.mic-select-inline {
+    background: rgba(255, 255, 255, 0.08);
+    color: #e0e0e0;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 6px;
+    padding: 3px 8px;
+    font-size: 11px;
+    outline: none;
+    cursor: pointer;
+    transition: border-color 0.2s;
+    max-width: 150px;
+}
+
+.mic-select-inline:hover,
+.mic-select-inline:focus {
+    border-color: rgba(74, 144, 226, 0.5);
+}
+
+.mic-select-inline option {
+    background: #2a2a2d;
+    color: #e0e0e0;
+}
+
+/* ===== 显示器面板内识别日志（命令日志下方） ===== */
+.debug-details-monitor {
+    margin-top: 4px;
+}
+
+.debug-box-monitor {
+    max-height: 160px;
+}
+
+.debug-details-monitor[open] {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+/* ===== DDC/CI 状态文本 ===== */
+.ddcci-status-text {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.35);
+    white-space: nowrap;
 }

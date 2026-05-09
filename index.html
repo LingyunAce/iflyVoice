@@ -7,67 +7,18 @@
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <!-- 左侧：语音输入面板 -->
-    <div class="panel panel-left">
-        <div class="panel-header">
-            <span class="panel-icon">&#127908;</span>
-            <span class="panel-title">语音输入</span>
-        </div>
-
-        <!-- API 类型选择 -->
-        <div class="api-selector">
-            <label><input type="radio" name="apiType" value="browser" checked> 浏览器 API</label>
-            <label><input type="radio" name="apiType" value="iflytek"> 讯飞 API</label>
-        </div>
-
-        <!-- 讯飞配置区域（含动态注入的麦克风选择器） -->
-        <div id="iflytekConfig" class="iflytek-config"></div>
-
-        <!-- 状态 -->
-        <div id="status" class="status">准备就绪</div>
-
-        <!-- 录音按钮 -->
-        <div class="button-container">
-            <button id="recordBtn" class="record-btn">
-                <div class="mic-icon">&#127908;</div>
-                <div class="btn-text">开始录音</div>
-            </button>
-        </div>
-
-        <!-- 识别结果 + 发送区 -->
-        <div class="result-container">
-            <div class="result-header">
-                <h3>识别结果</h3>
-                <button id="sendToAiBtn" class="send-btn" disabled>发送给 AI &#10148;</button>
-            </div>
-            <div id="result" class="result-box">
-                <div class="placeholder">点击按钮开始录音，识别结果将显示在这里...</div>
-            </div>
-        </div>
-
-        <!-- 调试日志（折叠） -->
-        <details class="debug-details">
-            <summary>&#128269; 识别日志</summary>
-            <pre id="debugLog" class="debug-box"></pre>
-        </details>
-    </div>
-
-    <!-- 右侧：AI 对话面板 -->
+    <!-- 主面板：AI 对话 -->
     <div class="panel panel-right">
         <div class="panel-header">
             <span class="panel-icon">&#129504;</span>
             <span class="panel-title">AI 助手</span>
             <div class="panel-actions">
-                <!-- 模型源切换 -->
-                <select id="modelSource" class="model-source-sel" title="切换模型来源">
-                    <option value="local">本地(Ollama)</option>
-                    <option value="cloud">云端(火山引擎)</option>
+                <!-- 麦克风选择 -->
+                <select id="micSelect" class="mic-select-inline" title="选择录音设备">
+                    <option value="">正在检测设备...</option>
                 </select>
-                <!-- 模型选择 -->
-                <select id="modelSelector" class="model-selector">
-                    <option value="qwen3:4b">qwen3:4b</option>
-                    <option value="deepseek-r1:7b">deepseek-r1:7b</option>
-                </select>
+                <!-- 固定模型：qwen3-vl:4b，地址已硬编码 192.168.1.32:11434 -->
+                <span class="model-badge">qwen3-vl:4b</span>
                 <button id="clearChatBtn" class="clear-btn" title="清空对话">&#128465;</button>
             </div>
         </div>
@@ -76,17 +27,21 @@
         <div id="chatMessages" class="chat-messages">
             <div class="chat-welcome">
                 <div class="welcome-icon">&#129504;</div>
-                <p>你好！我是本地 AI 助手（qwen3:4b）</p>
-                <p class="welcome-sub">通过左侧语音识别或下方输入框与我对话</p>
+                <p>你好！我是本地 AI 助手（qwen3-vl:4b）</p>
+                <p class="welcome-sub">点击语音输入按钮直接对话，或在此输入文字</p>
             </div>
         </div>
 
         <!-- 输入区 -->
         <div class="chat-input-area">
-            <textarea id="chatInput" class="chat-input" placeholder="输入消息，或使用左侧语音识别后点击「发送给 AI」..." rows="3"></textarea>
+            <textarea id="chatInput" class="chat-input" placeholder="输入消息，或点击语音输入直接对话..." rows="3"></textarea>
             <div class="chat-input-actions">
                 <span id="aiStatus" class="ai-status"></span>
                 <button id="stopGenBtn" class="stop-btn" style="display:none">&#9632; 停止</button>
+                <button id="recordBtn" class="voice-input-btn" title="语音输入">
+                    <span class="voice-icon">&#127908;</span>
+                    <span class="voice-text">语音输入</span>
+                </button>
                 <button id="chatSendBtn" class="chat-send-btn">发送 &#9654;</button>
             </div>
         </div>
@@ -100,28 +55,18 @@
             <div class="panel-actions">
                 <select id="displayType" class="display-type-sel" title="选择显示器类型">
                     <option value="native" selected>内置屏幕</option>
-                    <option value="adb">ADB 显示器</option>
+                    <option value="adb">外置屏幕</option>
                 </select>
+                <!-- DDC/CI 支持状态 -->
+                <span id="ddcciStatusDot" class="status-dot status-dot-off" title="DDC/CI 支持状态"></span>
+                <span id="ddcciStatusText" class="ddcci-status-text">DDC/CI 未知</span>
                 <span id="i2cStatusDot" class="status-dot status-dot-off"></span>
                 <span id="i2cStatusText" class="i2c-status-text">未连接</span>
+                <button id="exitBtn" class="exit-btn" title="退出">&#10006;</button>
             </div>
         </div>
 
         <div class="monitor-controls">
-            <!-- ADB 连接状态 -->
-            <div class="control-section adb-section" id="adbSection">
-                <label class="control-label">&#128279; ADB 设备</label>
-                <button id="adbCheckBtn" class="monitor-btn monitor-btn-sm">检测设备</button>
-                <span id="adbDeviceInfo" class="device-info-text"></span>
-            </div>
-            <!-- 内置屏幕状态 -->
-            <div class="control-section native-section" id="nativeSection" style="display:none">
-                <label class="control-label">&#128421; 内置屏幕</label>
-                <button id="nativeCheckBtn" class="monitor-btn monitor-btn-sm">检测连接</button>
-                <button id="nativePowerBtn" class="monitor-btn monitor-btn-sm">&#128161; 息屏</button>
-                <span id="nativeDeviceInfo" class="device-info-text"></span>
-            </div>
-
             <!-- 亮度控制 -->
             <div class="control-section">
                 <div class="control-label-row">
@@ -154,46 +99,36 @@
                 </div>
             </div>
 
-            <!-- 色温控制 -->
+            <!-- 系统音量 -->
             <div class="control-section">
                 <div class="control-label-row">
-                    <label class="control-label">&#127775; 色温</label>
-                    <span id="colorTempValue" class="control-value">50</span>
+                    <label class="control-label">&#128266; 音量</label>
+                    <span id="volumeValue" class="control-value">50</span>
                 </div>
-                <input type="range" id="colorTempSlider" class="control-slider color-temp-slider"
-                       min="0" max="100" value="50" title="0=最暖(偏黄)，100=最冷(偏蓝)">
+                <input type="range" id="volumeSlider" class="control-slider volume-slider"
+                       min="0" max="100" value="50">
                 <div class="slider-marks">
-                    <span>&#127774; 暖</span><span>50</span><span>&#127752; 冷</span>
+                    <span>&#128265; 静音</span><span>50</span><span>&#128264; 最大</span>
                 </div>
-            </div>
-
-            <div class="control-section">
-                <div class="control-label-row">
-                    <label class="control-label">&#9680; 伽马</label>
-                    <span id="gammaValue" class="control-value">50</span>
-                </div>
-                <input type="range" id="gammaSlider" class="control-slider gamma-slider"
-                       min="0" max="100" value="50" title="0=最暗(gamma 2.5)，50=标准(gamma 1.0)，100=最亮(gamma 0.5)">
-                <div class="slider-marks">
-                    <span>&#9681; 暗</span><span>50</span><span>&#9680; 亮</span>
+                <!-- 快捷操作按钮 -->
+                <div class="quick-actions">
+                    <button class="monitor-btn" data-action="volume" data-value="0">&#128265; 静音</button>
+                    <button class="monitor-btn" data-action="volume" data-value="33">1/3</button>
+                    <button class="monitor-btn" data-action="volume" data-value="66">2/3</button>
+                    <button class="monitor-btn" data-action="volume" data-value="100">&#128264; 最大</button>
                 </div>
             </div>
 
 
-            <!-- 最近命令日志 -->
-            <details class="cmd-details">
-                <summary>&#128269; 命令日志</summary>
-                <pre id="i2cCmdLog" class="cmd-log-box"></pre>
-            </details>
         </div>
     </div>
 
     <!-- 依赖脚本 -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
-    <script src="iflytek-api.js"></script>
     <script src="ollama-api.js"></script>
-    <script src="cloud-api.js"></script>
+    <script src="sensevoice-api.js"></script>
     <script src="native-display-api.js"></script>
+    <script src="ddcci-api.js"></script>
     <script src="i2c-api.js"></script>
     <script src="main.js"></script>
 </body>

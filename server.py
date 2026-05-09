@@ -16,20 +16,11 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
-OLLAMA_HOST = "127.0.0.1"
+OLLAMA_HOST = "192.168.1.32"
 OLLAMA_PORT = 11434
+_OLLAMA_CONFIG = {"host": OLLAMA_HOST, "port": OLLAMA_PORT}  # 可动态修改
 LISTEN_PORT = 18766
 STATIC_DIR = os.path.dirname(os.path.abspath(__file__)) or "."
-
-# ── 火山引擎（豆包）云端模型配置 ──
-VOLCENGINE_CONFIG = {
-    "api_base": "https://ark.cn-beijing.volces.com/api/v3",  # 火山引擎 OpenAI 兼容端点
-    "api_key": os.environ.get("VOLCENGINE_API_KEY", ""),
-    # coding-plan 对应的模型 endpoint ID（用户需要在火山引擎控制台确认）
-    # 格式：ep-xxxxxxxxx 或直接用模型名
-    "default_model": "doubao-1-5-pro-32k-250115",
-}
-
 
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """每个请求一个线程，互不阻塞"""
@@ -38,10 +29,11 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    # 类级别状态：存储最后一次设置的色温/伽马值（读取时直接返回，而非从GPU估算）
+    # 类级别状态：存储最后一次设置的色温/伽马/音量（读取时直接返回缓存值）
     # 用锁保护，避免多线程并发访问时互相覆盖
-    _native_state = {"colorTemp": 50, "gamma": 50}
+    _native_state = {"colorTemp": 50, "gamma": 50, "volume": 50}
     _state_lock = threading.Lock()
+    _state_file = os.path.join(STATIC_DIR, ".native_state.json")  # 持久化路径
     protocol_version = "HTTP/1.0"
 
     def log_message(self, fmt, *args):
@@ -56,14 +48,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path.startswith("/ollama/"):
+        if self.path.startswith("/exit"):
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"msg":"exiting"}')
+            import sys
+            sys.exit(0)
+            return
+        elif self.path.startswith("/ollama/"):
             self._proxy("GET")
         elif self.path.startswith("/i2c/"):
             self._handle_i2c()
-        elif self.path.startswith("/cloud/"):
-            self._proxy_cloud("GET")
         elif self.path.startswith("/native/"):
             self._handle_native("GET")
+        elif self.path.startswith("/ddcci/"):
+            self._handle_ddcci("GET")
         else:
             self._serve_static()
 
@@ -72,10 +72,12 @@ class Handler(BaseHTTPRequestHandler):
             self._proxy("POST")
         elif self.path.startswith("/i2c/"):
             self._handle_i2c()
-        elif self.path.startswith("/cloud/"):
-            self._proxy_cloud("POST")
+        elif self.path.startswith("/sensevoice/"):
+            self._handle_sensevoice()
         elif self.path.startswith("/native/"):
             self._handle_native("POST")
+        elif self.path.startswith("/ddcci/"):
+            self._handle_ddcci("POST")
         else:
             self.send_error(404)
 
@@ -138,12 +140,12 @@ class Handler(BaseHTTPRequestHandler):
         sock = None
         try:
             # Connect to Ollama with timeout
-            sock = socket.create_connection((OLLAMA_HOST, OLLAMA_PORT), timeout=10)
+            sock = socket.create_connection((_OLLAMA_CONFIG["host"], _OLLAMA_CONFIG["port"]), timeout=10)
             sock.settimeout(None)  # Remove timeout after connect
 
             # Build raw HTTP/1.0 request
             req_lines = [f"{method} {target_path} HTTP/1.0"]
-            req_lines.append(f"Host: {OLLAMA_HOST}:{OLLAMA_PORT}")
+            req_lines.append(f"Host: {_OLLAMA_CONFIG['host']}:{_OLLAMA_CONFIG['port']}")
             if body is not None:
                 req_lines.append(f"Content-Type: application/json")
                 req_lines.append(f"Content-Length: {len(body)}")
@@ -260,6 +262,11 @@ class Handler(BaseHTTPRequestHandler):
         cmd_type = body.get("command", "i2cset")
         args = body.get("args", [])
 
+        # ── DDC/CI 支持检测 ──
+        if cmd_type == "ddc_check":
+            self._check_ddc_ci_support()
+            return
+
         if cmd_type == "i2cset":
             adb_cmd = ["adb", "shell", "i2cset"] + args
         else:
@@ -290,165 +297,451 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send_json(500, {"success": False, "error": str(e)})
 
-    # ── 火山引擎（云端模型）OpenAI 兼容代理 ──
-    def _proxy_cloud(self, method):
-        """将 /cloud/* 请求转发到火山引擎 OpenAI 兼容 API（支持 SSE 流式）"""
-        target_path = self.path.replace("/cloud/", "/", 1)
+    def _check_ddc_ci_support(self):
+        """检测 ADB 显示器是否支持 DDC/CI（通过尝试读取 VCP 0x00 字节）"""
+        try:
+            # 尝试用 i2cget 读取 DDC/CI VCP 0x00 (Manufacturer ID) 来判断是否支持
+            test_cmd = ["adb", "shell", "i2cget", "-y", "-f", "0x37", "0x37", "0x00", "b"]
+            sys.stderr.write(f"[DDC/CI] 检测中: {' '.join(test_cmd)}\n")
+            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
 
-        url = f"{VOLCENGINE_CONFIG['api_base']}{target_path}"
+            if result.returncode == 0 and result.stdout.strip():
+                self._send_json(200, {
+                    "supported": True,
+                    "detail": f"VCP readable: {result.stdout.strip()[:20]}",
+                })
+            else:
+                # 尝试另一种方式：检查 i2cdetect 是否能看到显示器
+                detect_cmd = ["adb", "shell", "i2cdetect", "-y", "-f", "0x37"]
+                det_result = subprocess.run(detect_cmd, capture_output=True, text=True, timeout=10)
+                output = (det_result.stdout or "").strip()
+                # 如果能探测到 I2C 总线设备，说明基本通信正常
+                has_devices = any(c in output for c in ['30', '31', '36', '37', '49', '50'])
+                if has_devices:
+                    self._send_json(200, {
+                        "supported": True,
+                        "detail": "I2C bus detected",
+                    })
+                else:
+                    err = (result.stderr or det_result.stderr or "No response").strip()[:60]
+                    self._send_json(200, {
+                        "supported": False,
+                        "reason": err,
+                    })
+        except FileNotFoundError:
+            self._send_json(200, {"supported": False, "reason": "ADB not found"})
+        except Exception as e:
+            self._send_json(200, {"supported": False, "reason": str(e)[:80]})
 
-        # Read POST body
-        body = None
+    # ════════════════════════════════════════════
+    #  DDC/CI (dxva2.dll) 外置显示器控制
+    #  通过 Windows dxva2.dll 直接控制 HDMI 外接显示器的 VCP 特性
+    #  物理显示器句柄: MonitorFromPoint(100,100) → PhysMon#1
+    #  VCP: 0x10=亮度, 0x12=对比度 (范围 0-100)
+    # ════════════════════════════════════════════
+    def _handle_ddcci(self, method):
+        """分发 /ddcci/* 路由"""
+        path = self.path.split("?")[0].split("#")[0]
+        endpoint = path.replace("/ddcci/", "", 1).strip("/")
+
+        body = {}
         if method == "POST":
             cl = int(self.headers.get("Content-Length", 0))
             if cl > 0:
                 try:
-                    body = self.rfile.read(cl)
-                except Exception as e:
-                    self._send_json(400, {"error": {"message": f"Read error: {e}"}})
-                    return
+                    body = json.loads(self.rfile.read(cl).decode("utf-8"))
+                except Exception:
+                    return self._send_json(400, {"success": False, "error": "Invalid JSON"})
+
+        handlers = {
+            "status":         ("GET",  lambda: self._ddcci_status()),
+            "brightness":     ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x10, "brightness")),
+            "contrast":       ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x12, "contrast")),
+            "contrast_read":  ("GET",  lambda: self._ddcci_get_vcp(0x12, "contrast")),
+        }
+
+        if endpoint not in handlers:
+            return self._send_json(404, {"success": False, "error": f"Unknown DDC/CI endpoint: {endpoint}"})
+
+        allowed, handler = handlers[endpoint]
+        if allowed != "ALL" and method != allowed:
+            return self._send_json(405, {"error": f"{method} not allowed for /ddcci/{endpoint}"})
+        try:
+            handler()
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[DDC/CI] /{endpoint} error: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    @staticmethod
+    def _get_physical_monitor():
+        """获取外接显示器的物理句柄 (支持 DDC/CI)
+
+        策略（多重容错，按优先级尝试）：
+          1. MonitorFromPoint(100,100)      ← 已验证在 ps1 可用
+          2. MonitorFromWindow(Desktop)     ← 获取桌面所在显示器  
+          3. MonitorFromPoint(0,0)          ← 左上角（主显）
+          4. EnumDisplayMonitors 回调       ← 兜底枚举全部
+
+        拿到 HMON 后 → 取出所有物理监视器 → 逐个测 VCP 0x00 → 返回第一个响应的（外接屏）
+
+        已验证场景（ddc_precise.ps1）：HMON=65537 下有2个物理设备
+          PhysMon #1 Handle=0  → ✅ DDC/CI 正常（亮度40/对比50）← 外接屏
+          PhysMon #2 Handle=1  → ❌ Error31 ← 内置屏
+
+        Returns:
+            (hPhysicalMonitor, err_msg) 二元组；失败时 hPhysicalMonitor 为 None
+        """
+        import ctypes
+        from ctypes import windll, byref, c_ulong, c_uint, c_ubyte, c_char, c_wchar, Structure, c_long, POINTER, WINFUNCTYPE, pointer
+
+        class PHYSICAL_MONITOR(Structure):
+            _fields_ = [("handle", c_ulong), ("description", c_wchar * 128)]
+
+        class POINT(Structure):
+            _fields_ = [("x", c_long), ("y", c_long)]
+
+        class RECT(Structure):
+            _fields_ = [("left", c_long), ("top", c_long), ("right", c_long), ("bottom", c_long)]
+
+        user32 = windll.user32
+        dxva2 = windll.dxva2
+        MON_DEFAULT_NEAREST = 0x00000002
+
+        hmon = None
+        src = ""
+
+        # ── 方式1: MonitorFromPoint(100,100) + MON_DEFAULT_NEAREST ──
+        pt = POINT(100, 100)
+        hmon = user32.MonitorFromPoint(byref(pt), MON_DEFAULT_NEAREST)
+        if hmon:
+            src = "MonitorFromPoint(POINT(100,100), MON_DEFAULT_NEAREST)"
+        else:
+            # ── 方式2: MonitorFromWindow(GetDesktopWindow()) ──
+            dw = user32.GetDesktopWindow()
+            hmon = user32.MonitorFromWindow(dw, 0)
+            if hmon:
+                src = "MonitorFromWindow(Desktop)"
+            else:
+                # ── 方式3: MonitorFromPoint(0,0) ──
+                pt0 = POINT(0, 0)
+                hmon = user32.MonitorFromPoint(byref(pt0), MON_DEFAULT_NEAREST)
+                if hmon:
+                    src = "MonitorFromPoint(POINT(0,0), MON_DEFAULT_NEAREST)"
+                else:
+                    # ── 方式4: EnumDisplayMonitors 枚举第一个 ──
+                    _found_hmons = []
+                    _cb_type = WINFUNCTYPE(c_uint, c_ulong, c_ulong, POINTER(RECT), c_uint)
+
+                    def _enum_cb(hm, hdc, lprect, lparam):
+                        _found_hmons.append(int(hm))
+                        return 1
+
+                    _cb = _cb_type(_enum_cb)
+                    user32.EnumDisplayMonitors(0, None, _cb, 0)
+                    if _found_hmons:
+                        hmon = _found_hmons[0]
+                        src = "EnumDisplayMonitors[#0]"
+
+        if not hmon:
+            return None, "所有方式均无法获取 HMONITOR (point100/desktop/window/enum)"
+
+        sys.stderr.write("[DDC/CI] HMON=%s (via %s)\n" % (hex(hmon), src))
+
+        # ── 获取该 HMON 下所有物理监视器（注意：在 dxva2.dll，不是 user32）──
+        num_phys = c_uint()
+        if not dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, byref(num_phys)):
+            return None, "GetNumberOfPhysicalMonitorsFromHMONITOR failed"
+        if num_phys.value == 0:
+            return None, "No physical monitors under HMON %s" % hex(hmon)
+
+        phys_arr = (PHYSICAL_MONITOR * num_phys.value)()
+        if not dxva2.GetPhysicalMonitorsFromHMONITOR(hmon, num_phys.value, byref(phys_arr)):
+            return None, "GetPhysicalMonitorsFromHMONITOR failed"
+
+        handles = [int(p.handle) for p in phys_arr]
+        sys.stderr.write("[DDC/CI] 发现 %d 个物理监视器: %s\n" % (
+            len(handles), ", ".join(hex(h) for h in handles)))
+
+        # ── 逐个测试 VCP 0x00，找第一个 DDC/CI 响应的（外接屏）──
+        # 策略：先试 VCP 0x00（制造商 ID），若无响应再试 VCP 0x10（亮度）
+        # 返回第一个任意 VCP 代码有响应的物理监视器（外接显示器支持 DDC/CI）
+        for idx, hPhys in enumerate(handles):
+            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
+            try:
+                ret = dxva2.GetVCPFeatureAndVCPFeatureReply(
+                    hPhys, 0x00, byref(vct), byref(cur), byref(mx))
+                if ret:
+                    mid = "0x%04X" % cur.value
+                    sys.stderr.write(
+                        "[DDC/CI] OK PhysMon#%d Handle=%s MfgID=%s SELECTED\n"
+                        % (idx, hex(hPhys), mid))
+                    return hPhys, None
+            except Exception as e:
+                sys.stderr.write(
+                    "[DDC/CI] X PhysMon#%d Handle=%s VCP0x00 err=%s\n"
+                    % (idx, hex(hPhys), e))
+
+        # VCP 0x00 全部无响应，备选：测 VCP 0x10（亮度），取第一个成功的
+        for idx, hPhys in enumerate(handles):
+            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
+            try:
+                ret = dxva2.GetVCPFeatureAndVCPFeatureReply(
+                    hPhys, 0x10, byref(vct), byref(cur), byref(mx))
+                if ret:
+                    sys.stderr.write(
+                        "[DDC/CI] OK PhysMon#%d Handle=%s Brightness=%d (VCP 0x10 fallback) SELECTED\n"
+                        % (idx, hex(hPhys), cur.value))
+                    return hPhys, None
+            except Exception as e:
+                sys.stderr.write(
+                    "[DDC/CI] X PhysMon#%d Handle=%s VCP0x10 err=%s\n"
+                    % (idx, hex(hPhys), e))
+
+        return None, "All %d phys-mon tested, none support DDC/CI" % len(handles)
+
+    def _ddcci_status(self):
+        """检测外置屏幕 DDC/CI 是否可用（读取 VCP 0x00 制造商 ID）"""
+        hPhys, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {
+                "connected": False,
+                "supported": False,
+                "reason": err or "无法获取物理显示器句柄",
+            })
+
+        import ctypes
+        from ctypes import windll, byref, c_ubyte, c_uint
 
         try:
-            import urllib.request
-            import ssl
-
-            req = urllib.request.Request(
-                url,
-                data=body,
-                method=method,
-                headers={
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {VOLCENGINE_CONFIG['api_key']}",
-                    # 禁用内容编码，让服务端保持 chunked / stream 原样返回
-                    "Accept-Encoding": "identity",
-                },
+            dxva2 = windll.dxva2
+            vct = c_ubyte()
+            cur_val = c_uint()
+            max_val = c_uint()
+            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(
+                hPhys, 0x00,          # VCP 0x00 = Manufacturer ID
+                byref(vct),
+                byref(cur_val),
+                byref(max_val),
             )
+            if ret:
+                mid_hex = f"0x{cur_val.value:04X}"
+                sys.stderr.write(f"[DDC/CI] ✓ ManufacturerID={mid_hex}\n")
+                self._send_json(200, {
+                    "connected": True,
+                    "supported": True,
+                    "manufacturerId": mid_hex,
+                })
+            else:
+                # 备选：尝试读亮度 VCP 0x10
+                ret2 = dxva2.GetVCPFeatureAndVCPFeatureReply(
+                    hPhys, 0x10,
+                    byref(c_ubyte()), byref(c_uint()), byref(c_uint()),
+                )
+                if ret2:
+                    sys.stderr.write("[DDC/CI] ✓ VCP brightness readable\n")
+                    self._send_json(200, {
+                        "connected": True,
+                        "supported": True,
+                        "detail": "VCP brightness readable",
+                    })
+                else:
+                    sys.stderr.write("[DDC/CI] ✗ DDC/CI no response\n")
+                    self._send_json(200, {
+                        "connected": True,
+                        "supported": False,
+                        "reason": "DDC/CI no response",
+                    })
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[DDC/CI] 异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(200, {
+                "connected": False,
+                "supported": False,
+                "reason": str(e)[:120],
+            })
 
-            ctx = ssl.create_default_context()
-            resp = urllib.request.urlopen(req, timeout=120, context=ctx)
-            resp_status = resp.status
-            content_type = resp.headers.get("Content-Type", "application/json")
+    def _ddcci_set_vcp(self, body, vcp_code, control_name):
+        """通过 DDC/CI SetVCPFeature 设置 VCP 值（0-100）"""
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
 
-            self.send_response(resp_status)
-            self.send_header("Content-Type", content_type)
-            self._cors_headers()
-            # 流式响应不发送 Content-Length，改用 chunked transfer
-            self.send_header("Transfer-Encoding", "chunked")
-            self.end_headers()
+        hPhys, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {
+                "success": False,
+                "error": err or "无法获取物理显示器句柄",
+            })
 
-            # 分块读取并实时转发（支持 SSE 流式）
-            while True:
-                chunk = resp.read(4096)
-                if not chunk:
-                    break
-                try:
-                    # HTTP/1.0 chunked encoding
-                    chunk_hex = format(len(chunk), 'x')
-                    self.wfile.write(chunk_hex.encode() + b"\r\n" + chunk + b"\r\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError, OSError):
-                    break
+        import ctypes
+        from ctypes import windll
 
-            # 发送 chunked 结束标记
-            try:
-                self.wfile.write(b"0\r\n\r\n")
-                self.wfile.flush()
-            except Exception:
-                pass
+        try:
+            dxva2 = windll.dxva2
+            ret = dxva2.SetVCPFeature(hPhys, vcp_code, value)
+            if ret:
+                sys.stderr.write(f"[DDC/CI] ✓ SetVCPFeature 0x{vcp_code:02X}({control_name})={value}%\n")
+                self._send_json(200, {
+                    "success": True,
+                    control_name: value,
+                    "vcpCode": f"0x{vcp_code:02X}",
+                })
+            else:
+                sys.stderr.write(f"[DDC/CI] ✗ SetVCPFeature 0x{vcp_code:02X}({control_name})={value} failed\n")
+                self._send_json(200, {
+                    "success": False,
+                    "error": f"SetVCPFeature 0x{vcp_code:02X} failed (monitor may not support this VCP code)",
+                })
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[DDC/CI] SetVCPFeature 异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
 
-            resp.close()
+    def _ddcci_get_vcp(self, vcp_code, control_name):
+        """读取 VCP 值（0-100）"""
+        hPhys, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
 
+        import ctypes
+        from ctypes import windll, byref, c_ubyte, c_uint
+
+        try:
+            dxva2 = windll.dxva2
+            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
+            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, vcp_code, byref(vct), byref(cur), byref(mx))
+            if ret:
+                self._send_json(200, {
+                    "success": True,
+                    control_name: int(cur.value),
+                    "max": int(mx.value),
+                    "vcpCode": f"0x{vcp_code:02X}",
+                })
+            else:
+                self._send_json(200, {
+                    "success": False,
+                    "error": f"VCP 0x{vcp_code:02X} read failed",
+                })
+        except Exception as e:
+            sys.stderr.write(f"[DDC/CI] GetVCP 0x{vcp_code:02X} 异常: {e}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    # ── SenseVoice (xinference) 语音识别 ─────────────────────────
+    # xinference SenseVoiceSmall HTTP API: POST /v1/audio/transcriptions
+    SENSEVOICE_CONFIG = {
+        "base_url": "http://192.168.1.32:9997",
+        "api_key": "sk-86ccca26e58a8",
+        "model": "SenseVoiceSmall",
+    }
+
+    def _handle_sensevoice(self):
+        """Proxy: browser → server → xinference SenseVoiceSmall"""
+        import urllib.request
+
+        cfg = self.SENSEVOICE_CONFIG
+        target_url = f"{cfg['base_url']}/v1/audio/transcriptions"
+
+        # 读取浏览器发的 multipart body
+        cl = int(self.headers.get("Content-Length", 0))
+        if cl <= 0:
+            return self._send_json(400, {"success": False, "error": "No audio data"})
+
+        content_type = self.headers.get("Content-Type", "")
+        original_body = self.rfile.read(cl)
+
+        # 在原始 multipart body 前注入 model 字段
+        # 格式: --boundary\r\nContent-Disposition: form-data; name="model"\r\n\r\nSenseVoiceSmall\r\n + 原始body
+        boundary = ""
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.lower().startswith("boundary="):
+                boundary = part.split("=", 1)[1].strip().strip('"')
+                break
+
+        if not boundary:
+            return self._send_json(400, {"success": False, "error": "No multipart boundary"})
+
+        # 注入 model 字段到 multipart body 开头
+        model_field = (
+            f"--{boundary}\r\n"
+            f"Content-Disposition: form-data; name=\"model\"\r\n"
+            f"\r\n"
+            f"{cfg['model']}\r\n"
+        ).encode("utf-8")
+
+        new_body = model_field + original_body
+        new_content_type = content_type  # boundary 不变
+        new_cl = len(new_body)
+
+        try:
+            req = urllib.request.Request(
+                target_url,
+                data=new_body,
+                headers={
+                    "Authorization": f"Bearer {cfg['api_key']}",
+                    "Content-Type": new_content_type,
+                    "Content-Length": str(new_cl),
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                result = resp.read().decode("utf-8")
+                data = json.loads(result)
+                # xinference 返回 {"text": "识别结果"}
+                text = data.get("text", "").strip()
+                if text:
+                    self._send_json(200, {"success": True, "text": text})
+                else:
+                    self._send_json(200, {"success": True, "text": "", "raw": data})
         except urllib.error.HTTPError as e:
             err_body = e.read().decode("utf-8", errors="replace")
-            sys.stderr.write(f"[Cloud] 火山引擎 HTTP {e.code}: {err_body}\n")
-            self._send_json(e.code, {
-                "error": {"message": f"火山引擎 API 错误: {err_body}", "status": e.code}
-            })
-        except urllib.error.URLError as e:
-            sys.stderr.write(f"[Cloud] 连接失败: {e.reason}\n")
-            self._send_json(502, {"error": {"message": f"无法连接火山引擎: {e.reason}"}})
+            sys.stderr.write(f"[SenseVoice] HTTP {e.code}: {err_body}\n")
+            self._send_json(502, {"success": False, "error": f"xinference {e.code}: {err_body[:200]}"})
         except Exception as e:
-            sys.stderr.write(f"[Cloud] 代理异常: {e}\n")
-            self._send_json(500, {"error": {"message": f"代理错误: {e}"}})
+            sys.stderr.write(f"[SenseVoice] Error: {e}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
 
-    # ── Windows 本地屏幕（内置显示器）控制 ──
+    # ── 内置屏幕（WMI/Gamma）路由分发 ─────────────────────────────
     def _handle_native(self, method):
-        """处理 /native/* 路由：WMI 亮度 / DDC/CI 对比度"""
-        path = self.path.split("?")[0]
+        """分发 /native/<endpoint> 请求到对应的处理方法"""
+        path = self.path.split("?")[0].split("#")[0]
+        endpoint = path.replace("/native/", "", 1).strip("/")
+        if not endpoint:
+            return self._send_json(404, {"success": False, "error": "No native endpoint"})
 
-        if path == "/native/status":
-            self._native_status()
-            return
-
-        if path == "/native/brightness" and method == "GET":
-            # 读取当前亮度（供回读确认用）
-            ps = (
-                "$c = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightness -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                "if ($c) { @{brightness=$c.CurrentBrightness} | ConvertTo-Json -Compress } "
-                "else { @{brightness=$null} | ConvertTo-Json -Compress }"
-            )
-            out = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True)
-            try:
-                data = json.loads(out.stdout.strip())
-                self._send_json(200, {"brightness": data.get("brightness")})
-            except Exception:
-                self._send_json(200, {"brightness": None})
-            return
-
-        if path == "/native/brightness" and method == "POST":
+        body = {}
+        if method == "POST":
             cl = int(self.headers.get("Content-Length", 0))
-            if cl <= 0:
-                return self._send_json(400, {"success": False, "error": "Missing body"})
-            try:
-                body = json.loads(self.rfile.read(cl).decode("utf-8"))
-            except Exception as e:
-                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
-            self._native_set_brightness(body)
-            return
+            if cl > 0:
+                try:
+                    body = json.loads(self.rfile.read(cl).decode("utf-8"))
+                except Exception:
+                    return self._send_json(400, {"success": False, "error": "Invalid JSON"})
 
-        if path == "/native/contrast" and method == "POST":
-            cl = int(self.headers.get("Content-Length", 0))
-            if cl <= 0:
-                return self._send_json(400, {"success": False, "error": "Missing body"})
-            try:
-                body = json.loads(self.rfile.read(cl).decode("utf-8"))
-            except Exception as e:
-                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
-            self._native_set_contrast(body)
-            return
+        # 路由表: endpoint → (allowed_method, handler)
+        handlers = {
+            "status":     ("GET",  lambda: self._native_status()),
+            "brightness": ("POST", lambda b=body: self._native_set_brightness(b)),
+            "contrast":   ("POST", lambda b=body: self._native_set_contrast(b)),
+            "gamma":      ("ALL",  lambda b=body: self._native_set_gamma(b) if method == "POST" else self._native_get_gamma()),
+            "color_temp": ("POST", lambda b=body: self._native_set_color_temp(b)),
+            "volume":     ("ALL",  lambda b=body: self._native_set_volume(b) if method == "POST" else self._native_get_volume()),
+            "power":      ("POST", lambda: self._native_power_off()),
+        }
 
-        if path == "/native/color_temp" and method == "POST":
-            cl = int(self.headers.get("Content-Length", 0))
-            if cl <= 0:
-                return self._send_json(400, {"success": False, "error": "Missing body"})
-            try:
-                body = json.loads(self.rfile.read(cl).decode("utf-8"))
-            except Exception as e:
-                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
-            self._native_set_color_temp(body)
-            return
+        if endpoint not in handlers:
+            return self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {endpoint}"})
 
-        if path == "/native/gamma" and method == "POST":
-            cl = int(self.headers.get("Content-Length", 0))
-            if cl <= 0:
-                return self._send_json(400, {"success": False, "error": "Missing body"})
-            try:
-                body = json.loads(self.rfile.read(cl).decode("utf-8"))
-            except Exception as e:
-                return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
-            self._native_set_gamma(body)
-            return
+        allowed_method, handler = handlers[endpoint]
+        if allowed_method != "ALL" and method != allowed_method:
+            return self._send_json(405, {"success": False, "error": f"{method} not allowed for /native/{endpoint}"})
 
-        # GET /native/gamma → 读取当前 gamma 曲线，估算 gamma 值和色温
-        if path == "/native/gamma" and method == "GET":
-            self._native_get_gamma()
-            return
-
-        if path == "/native/power" and method == "POST":
-            self._native_power_off()
-            return  # ← 关键：必须 return，否则会继续走到下面的 404
-
-        self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {path}"})
+        try:
+            handler()
+        except Exception as e:
+            import traceback
+            sys.stderr.write(f"[Native] /{endpoint} error: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
 
     def _native_status(self):
         """检测 Windows WMI 亮度接口是否可用"""
@@ -579,6 +872,7 @@ class Handler(BaseHTTPRequestHandler):
             if result:
                 with Handler._state_lock:
                     Handler._native_state["gamma"] = value
+                Handler._save_state()
                 self._send_json(200, {"success": True, "gamma": value, "gammaVal": round(gamma_val, 2)})
             else:
                 self._send_json(200, {"success": False, "error": "SetDeviceGammaRamp failed"})
@@ -615,6 +909,305 @@ class Handler(BaseHTTPRequestHandler):
             import traceback
             sys.stderr.write(f"[Native] 息屏异常: {e}\n{traceback.format_exc()}\n")
             self._send_json(500, {"success": False, "error": str(e)})
+
+    @staticmethod
+    def _run_nircmd(args, timeout=5):
+        """调用 nircmd.exe 并隐藏控制台窗口（防止闪黑框）"""
+        import os
+        import subprocess as _sp
+        nircmd = os.path.join(STATIC_DIR, "nircmd.exe")
+        if not os.path.exists(nircmd):
+            return None
+        # 隐藏窗口: CREATE_NO_WINDOW (Windows) 或 STARTUPINFO + SW_HIDE
+        si = _sp.STARTUPINFO()
+        si.dwFlags |= _sp.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        try:
+            return _sp.run(
+                [nircmd] + args,
+                capture_output=True, text=True, timeout=timeout,
+                startupinfo=si,
+            )
+        except Exception:
+            return None
+
+    def _native_set_volume(self, body):
+        """通过 nircmd 设置系统主音量 (0-100)，隐藏窗口不弹窗"""
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+
+        # nircmd setsysvolume 使用 0-65535 范围
+        raw_val = int(round(value * 65535 / 100.0))
+
+        result = self._run_nircmd(["setsysvolume", str(raw_val)])
+        if result is None:
+            self._send_json(500, {"success": False, "error": "nircmd.exe not found or failed"})
+            return
+
+        if result.returncode == 0:
+            with Handler._state_lock:
+                Handler._native_state["volume"] = value
+            Handler._save_state()
+            self._send_json(200, {"success": True, "volume": value})
+        else:
+            err = result.stderr.strip() or result.stdout.strip()
+            self._send_json(200, {"success": False, "error": err})
+
+    def _read_volume_from_registry(self):
+        """从注册表读取近似系统音量值（备用方案）"""
+        import winreg
+        try:
+            key = winreg.OpenKey(
+                winreg.HKEY_LOCAL_MACHINE,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Volume",
+                0, winreg.KEY_READ
+            )
+            vol_str = None
+            i = 0
+            while True:
+                try:
+                    subkey_name = winreg.EnumKey(key, i)
+                    subkey = winreg.OpenKey(key, subkey_name, 0, winreg.KEY_READ)
+                    j = 0
+                    while True:
+                        try:
+                            name, val, _ = winreg.EnumValue(subkey, j)
+                            if "Volume" in name.lower():
+                                vol_str = str(val)
+                                break
+                            j += 1
+                        except OSError:
+                            break
+                    winreg.CloseKey(subkey)
+                    if vol_str:
+                        break
+                    i += 1
+                except OSError:
+                    break
+            winreg.CloseKey(key)
+
+            if vol_str is not None:
+                return int(vol_str) * 100 // 65535
+        except Exception:
+            pass
+        return None
+
+    def _native_get_volume(self):
+        """返回当前系统主音量。
+        由于本机 CoreAudio COM 注册表缺失(0x80040154)，nircmd getsysvolume 超时，
+        无法直接读取真实系统主音量。返回值来源：
+          - 上次通过助手 SET 的值（最准确）
+          - 持久化文件恢复（跨会话）
+          - 启动时校准的近似值
+        如果用户在 Windows 托盘手动调了音量但未在助手中调节过，可能显示旧值。
+        需要在助手中拖动一次滑块即可重新同步。"""
+        with Handler._state_lock:
+            vol = Handler._native_state.get("volume", 50)
+        sys.stderr.write(f"[Native] 音量读取: 返回缓存 {vol}%\n")
+        self._send_json(200, {"volume": vol, "source": "cached"})
+
+    @staticmethod
+    def _save_state():
+        """将当前状态持久化到 JSON 文件"""
+        try:
+            with Handler._state_lock:
+                data = dict(Handler._native_state)
+            with open(Handler._state_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
+        except Exception as e:
+            sys.stderr.write(f"[Native] 状态持久化失败: {e}\n")
+
+    @staticmethod
+    def _load_state():
+        """从 JSON 文件恢复状态（如果存在）"""
+        try:
+            if not os.path.exists(Handler._state_file):
+                return False
+            with open(Handler._state_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            with Handler._state_lock:
+                for k in ("colorTemp", "gamma", "volume"):
+                    if k in data:
+                        Handler._native_state[k] = data[k]
+            return True
+        except Exception as e:
+            sys.stderr.write(f"[Native] 状态恢复失败: {e}\n")
+            return False
+
+    @staticmethod
+    def _bootstrap_volume():
+        """Server 启动时初始化音量缓存。
+        本机所有限制：
+          - nircmd getsysvolume → 挂起超时
+          - CoreAudio COM (MMDeviceEnumerator) → 注册表缺失 0x80040154
+          - Mixer API → 无可用音频线路
+          - waveOutGetVolume → 返回波形设备音量(非系统主音量)
+
+        策略优先级（按准确度排序）：
+          1. .native_state.json 持久化文件 ← 最可靠（上次 SET 写入的值）
+          2. C# 编译的 exe 调 CoreAudio ← 如果某天注册表修复了可能工作
+          3. waveOut 近似值 ← 仅作参考，通常不准
+          4. 默认 50
+        """
+        # ── 策略1: 持久化文件 ──
+        if Handler._load_state():
+            vol = Handler._native_state.get("volume", 50)
+            sys.stderr.write(f"[Native] 音量启动: 从持久化文件恢复 volume={vol}%\n")
+            # 可选：用 nircmd setsysvolume 把缓存值写回系统，确保一致
+            # （注意：这会覆盖用户在 Windows 托盘手动设置的值！所以默认不这样做）
+            return
+
+        # ── 策略2: 尝试编译并运行 C# CoreAudio 读取器 ──
+        vol_exe = os.path.join(STATIC_DIR, "_vol_read.exe")
+        vol_src = os.path.join(STATIC_DIR, "_vol_test.cs")
+        csc_path = None
+        for candidate in [
+            os.path.join(os.environ.get("windir", ""), r"Microsoft.NET\Framework64\v4.0.30319", "csc.exe"),
+            os.path.join(os.environ.get("windir", ""), r"Microsoft.NET\Framework\v4.0.30319", "csc.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                csc_path = candidate
+                break
+
+        if csc_path and os.path.exists(vol_src) and not os.path.exists(vol_exe):
+            try:
+                cwd = os.getcwd()
+                os.chdir(STATIC_DIR)
+                compile_r = subprocess.run(
+                    [csc_path, "/target:exe", f"/out:{os.path.basename(vol_exe)}",
+                     "/nologo", os.path.basename(vol_src)],
+                    capture_output=True, timeout=30,
+                )
+                os.chdir(cwd)
+                if compile_r.returncode == 0 and os.path.exists(vol_exe):
+                    sys.stderr.write("[Native] 音量启动: C# 编译成功\n")
+                else:
+                    vol_exe = None
+            except Exception as e:
+                sys.stderr.write(f"[Native] 音量启动: C# 编译失败 {e}\n")
+                vol_exe = None
+        elif not os.path.exists(vol_src):
+            vol_exe = None
+
+        if vol_exe and os.path.exists(vol_exe):
+            try:
+                run_r = subprocess.run([vol_exe], capture_output=True, text=True, timeout=10,
+                                       errors="replace")
+                out = run_r.stdout.strip()
+                if out.lstrip('-').isdigit():
+                    v = int(out)
+                    if 0 <= v <= 100:
+                        with Handler._state_lock:
+                            Handler._native_state["volume"] = v
+                        Handler._save_state()
+                        sys.stderr.write(f"[Native] 音量启动: C# 读取器 → {v}%\n")
+                        return
+            except Exception as e:
+                sys.stderr.write(f"[Native] 音量启动: C# 读取器执行失败 {e}\n")
+
+        # ── 策略3: waveOut 近似值（仅供参考）──
+        try:
+            import ctypes
+            v = ctypes.c_uint32()
+            ctypes.windll.winmm.waveOutGetVolume(0, ctypes.byref(v))
+            lo = v.value & 0xFFFF
+            hi = (v.value >> 16) & 0xFFFF
+            wave_pct = int((lo + hi) // 2 * 100 / 0xFFFF)
+            if 0 <= wave_pct <= 100:
+                with Handler._state_lock:
+                    Handler._native_state["volume"] = wave_pct
+                Handler._save_state()
+                sys.stderr.write(f"[Native] 音量启动: waveOut 近似值 → {wave_pct}% (仅参考)\n")
+                return
+        except Exception as e:
+            sys.stderr.write(f"[Native] 音量启动: waveOut 失败 ({e})\n")
+
+        # ── 最终 fallback ──
+        Handler._save_state()
+        sys.stderr.write("[Native] 音量启动: 使用默认 50%\n")
+
+    @staticmethod
+    def _ensure_volume_helper():
+        """确保 C# 音量控制工具已编译，返回 exe 路径；失败返回 None"""
+        import os
+
+        src_path = os.path.join(STATIC_DIR, "_vol_helper.cs")
+        exe_path = os.path.join(STATIC_DIR, "_vol_helper.exe")
+
+        if os.path.exists(exe_path):
+            return exe_path
+
+        # 使用 dynamic 关键字做 COM 晚绑定，避免接口 vtable 定义问题
+        csharp_code = r'''
+using System;
+
+class VolHelper {
+    static void Main(string[] args) {
+        if (args.Length < 1) return;
+        try {
+            // 通过 Type.GetTypeFromCLSID + Activator 创建 MMDeviceEnumerator
+            var mmDevType = Type.GetTypeFromCLSID(
+                new System.Guid("bcde0395-e52f-467c-8e3d-c57293534e89"));
+            dynamic dev = Activator.CreateInstance(mmDevType);
+
+            // GetDefaultAudioEndpoint(eRender=0, eConsole=1)
+            dynamic speaker = dev.GetDefaultAudioEndpoint(0, 1);
+
+            // AudioEndpointVolume 属性
+            dynamic epVol = speaker.AudioEndpointVolume;
+
+            if (args[0] == "set") {
+                float val = float.Parse(args[1]) / 100.0f;
+                epVol.MasterVolumeLevelScalar = val;
+                Console.WriteLine("OK");
+            } else if (args[0] == "get") {
+                float scalar = epVol.MasterVolumeLevelScalar;
+                Console.WriteLine((int)Math.Round(scalar * 100));
+            }
+        } catch (System.Runtime.InteropServices.COMException comEx) {
+            Console.Error.WriteLine("COM_HR=0x" + comEx.ErrorCode.ToString("X8"));
+            Environment.Exit(1);
+        } catch (Exception ex) {
+            Console.Error.WriteLine(ex.GetType().Name + ":" + ex.Message);
+            Environment.Exit(1);
+        }
+    }
+}
+'''
+        # 写源码文件
+        with open(src_path, "w", encoding="utf-8") as f:
+            f.write(csharp_code)
+
+        # 查找 csc.exe
+        csc = None
+        for candidate in [
+            os.path.join(os.environ.get("ProgramFiles(x86)", ""), "Microsoft.NET",
+                         "Framework", "v4.0.30319", "csc.exe"),
+            os.path.join(os.environ.get("windir", ""), "Microsoft.NET",
+                         "Framework64", "v4.0.30319", "csc.exe"),
+        ]:
+            if os.path.isfile(candidate):
+                csc = candidate
+                break
+
+        if not csc:
+            sys.stderr.write("[Native] csc.exe not found\n")
+            return None
+
+        # 编译
+        try:
+            result = subprocess.run(
+                [csc, "/target:exe", "/out:" + exe_path, "/nologo", src_path],
+                capture_output=True, text=True, timeout=30,
+            )
+            if result.returncode == 0 and os.path.exists(exe_path):
+                return exe_path
+            else:
+                sys.stderr.write(f"[Native] csc compile failed: {result.stderr}\n")
+                return None
+        except Exception as e:
+            sys.stderr.write(f"[Native] csc compile error: {e}\n")
+            return None
 
     def _native_set_color_temp(self, body):
         """通过 SetDeviceGammaRamp 设置色温（软件模拟）
@@ -682,6 +1275,7 @@ class Handler(BaseHTTPRequestHandler):
             if result:
                 with Handler._state_lock:
                     Handler._native_state["colorTemp"] = value
+                Handler._save_state()
                 self._send_json(200, {"success": True, "colorTemp": value})
             else:
                 err = ctypes.get_last_error()
@@ -711,11 +1305,14 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    # 启动时采样真实音量，解决首次 GET 返回默认值不准的问题
+    Handler._bootstrap_volume()
+
     server = ThreadedHTTPServer(("127.0.0.1", LISTEN_PORT), Handler)
     print("=" * 56)
     print(f"  Voice AI Proxy v3 (threaded)")
     print(f"  http://localhost:{LISTEN_PORT}")
-    print(f"  /ollama/* --> {OLLAMA_HOST}:{OLLAMA_PORT}")
+    print(f"  /ollama/* --> {_OLLAMA_CONFIG['host']}:{_OLLAMA_CONFIG['port']}")
     print("=" * 56)
     try:
         server.serve_forever()

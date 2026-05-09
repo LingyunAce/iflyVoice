@@ -6,7 +6,7 @@
 const OLLAMA_CONFIG = {
     baseUrl: '',  // 同源代理：请求发到 /ollama/* 由 server.py 转发
     apiPrefix: '/ollama',
-    defaultModel: 'qwen3:4b',
+    defaultModel: 'qwen3-vl:4b',
     systemPrompt: '你是一个智能语音助手，请用简洁、自然的中文回答用户问题。',
 };
 

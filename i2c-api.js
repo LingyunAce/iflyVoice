@@ -309,6 +309,26 @@ class I2cController {
             return { action: 'set', control: 'powerMode', value: 0x01 };  // ON
         }
 
+        // ── 音量相关 ──
+        let volumeMatch =
+            t.match(/音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?/);
+        if (volumeMatch) {
+            return { action: 'set', control: 'volume', value: parseInt(volumeMatch[1], 10) };
+        }
+        if (/音量.*(?:最高|最大|全开)/.test(t)) {
+            return { action: 'set', control: 'volume', value: 100 };
+        }
+        if (/(?:静音|mute)/i.test(t) || /音量.*(?:最低|最小|关掉)/.test(t)) {
+            return { action: 'set', control: 'volume', value: 0 };
+        }
+        if (/(?:音量).*(?:调高|提高|升高|增加|加大|大一点|大声点)|声音(大一点|大些)/.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: +15 };
+        }
+        if (/(?:音量).*(?:调低|降低|减小|减弱|小一点|小声点)|声音(小一点|小些)/.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: -15 };
+        }
+
         return null;
     }
 }
