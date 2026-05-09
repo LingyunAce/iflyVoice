@@ -560,7 +560,6 @@ class SpeechAIApp {
                 this.displayType = e.target.value;
                 this._updateDisplayTypeUI();
                 this._initDisplayController();
-                this._checkDdcciSupport();  // 切换类型后重新检测 DDC/CI 支持
                 this.addDebugLog(`切换显示器类型: ${this.displayType === 'adb' ? '外置屏幕' : '内置屏幕'}`);
             });
         }
@@ -683,11 +682,10 @@ class SpeechAIApp {
             setTimeout(() => this.checkNativeConnection(), 800);
             this._updateDisplayTypeUI();
         } else {
-            setTimeout(() => this.checkAdbConnection(), 800);
             this._updateDisplayTypeUI();
+            // 外置屏幕通过 DDC/CI 检测
+            setTimeout(() => this._checkDdcciSupport(), 100);
         }
-        // 初始化后检测 DDC/CI 支持
-        setTimeout(() => this._checkDdcciSupport(), 1000);
         // 启动时读取系统音量同步滑块
         setTimeout(() => this._syncVolumeSlider(), 1200);
     }
