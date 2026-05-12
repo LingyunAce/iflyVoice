@@ -30,6 +30,18 @@ TTS_URL = SERVER_URL + "/v1/audio/speech"
 def _log(msg):
     print(f"[VoiceAI] {msg}", file=sys.stderr, flush=True)
 
+# ── 文件日志 ─────────────────────────────────────────────────
+_log_path = os.path.join(os.path.dirname(__file__), "widget.log")
+_log_file = open(_log_path, "a", encoding="utf-8")
+
+def _flog(msg):
+    ts = time.strftime("%H:%M:%S")
+    ms = int(time.time() * 1000) % 1000
+    line = f"{ts}.{ms:03d} {msg}"
+    _log_file.write(line + "\n")
+    _log_file.flush()
+    print(f"[VoiceAI] {line}", file=sys.stderr, flush=True)
+
 
 # ═══════════════════════════════════════════════════════════════════
 #  Icon Drawing
@@ -380,6 +392,7 @@ class MainWidget(QWidget):
     sig_status = Signal(str)      # 跨线程更新状态文字
     sig_transcribe = Signal(str)
     sig_transcribe_err = Signal(str)
+    sig_tts_play = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -429,6 +442,7 @@ class MainWidget(QWidget):
         self.sig_done.connect(self._on_ai_done)
         self.sig_error.connect(self._on_ai_error)
         self.sig_status.connect(lambda s: self._panel.status_lbl.setText(s))
+        self.sig_tts_play.connect(self._play_tts)
         self.sig_transcribe.connect(self._on_transcribe_done)
         self.sig_transcribe_err.connect(self._on_transcribe_error)
 
@@ -651,7 +665,11 @@ class MainWidget(QWidget):
                         if token:
                             full += token
                             token_count += 1
-                            self.sig_stream.emit(full)
+                            if token_count % 20 == 0:
+                                _flog(f"[CHAT] tokens={token_count} len={len(full)}")
+                            # 每 5 个 token emit 一次，减少主线程信号队列压力
+                            if token_count % 5 == 0 or token_count == 1:
+                                self.sig_stream.emit(full)
                     except json.JSONDecodeError:
                         continue
 
@@ -670,10 +688,9 @@ class MainWidget(QWidget):
     def _on_stream_token(self, full):
         self._stream_buf = full
         self._stream_dirty = True
-        # 首个 token：立即显示，消除 150ms 延迟
         if self._ai_bubble is None:
+            # 首个 token：立即创建气泡，同时启动后续刷新 timer
             self._flush_stream()
-        # 后续 token：启动批量刷新 timer
         if not self._flush_timer.isActive():
             self._flush_timer.start()
 
@@ -681,7 +698,6 @@ class MainWidget(QWidget):
         if not self._stream_dirty:
             return
         self._stream_dirty = False
-        # 首个 token 到达，停止等待计时
         if self._wait_timer.isActive():
             self._wait_timer.stop()
         full = self._stream_buf
@@ -689,19 +705,20 @@ class MainWidget(QWidget):
         if self._ai_bubble is None:
             self._ai_bubble = self._panel.add_bubble(full, False)
         else:
-            # 冻结布局更新，避免长文本反复重算
-            self._panel.scroll_area.setUpdatesEnabled(False)
             self._ai_bubble.setText(full)
-            self._panel.scroll_area.setUpdatesEnabled(True)
             self._panel._scroll_to_bottom()
 
     def _on_ai_done(self, full):
-        _log(f"[UI] _on_ai_done len={len(full)}")
+        _flog(f"[DONE] len={len(full)}")
         self._wait_timer.stop()
         self._flush_timer.stop()
-        self._flush_stream()  # 确保最后的内容刷新
+        # 强制用最终文本更新气泡（忽略 dirty 标记）
+        if self._ai_bubble and full:
+            self._ai_bubble.setText(full)
+            self._panel._scroll_to_bottom()
         self._panel.status_lbl.setText("")
         self._ai_bubble = None
+        _flog(f"[DONE] 完成")
         if full and len(full) < 600:
             self._speak(full)
 
@@ -712,6 +729,9 @@ class MainWidget(QWidget):
         self._panel.add_bubble(f"[错误] {err}", False)
 
     def _speak(self, text):
+        threading.Thread(target=self._do_speak, args=(text,), daemon=True).start()
+
+    def _do_speak(self, text):
         try:
             payload = json.dumps({
                 "model": "CosyVoice2-0.5B",
@@ -723,13 +743,21 @@ class MainWidget(QWidget):
                           headers={"Content-Type": "application/json", "Accept": "audio/mpeg"},
                           method="POST")
 
-            with urlopen(req, timeout=60) as resp:
+            with urlopen(req, timeout=15) as resp:
                 audio = resp.read()
 
             mp3 = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
             with open(mp3, "wb") as f:
                 f.write(audio)
 
+            # QMediaPlayer 必须在主线程创建，用 signal 触发
+            self.sig_tts_play.emit(mp3)
+
+        except Exception as e:
+            _flog(f"[TTS] 错误: {e}")
+
+    def _play_tts(self, mp3):
+        try:
             player = QMediaPlayer()
             out = QAudioOutput()
             player.setAudioOutput(out)
@@ -742,9 +770,8 @@ class MainWidget(QWidget):
                 except Exception:
                     pass
             player.playbackChanged.connect(cleanup)
-
         except Exception as e:
-            _log(f"TTS 错误: {e}")
+            _flog(f"[TTS] 播放错误: {e}")
 
     # ── 录音（QMediaCaptureSession + QMediaRecorder）──
     def _toggle_recording(self):
