@@ -486,39 +486,46 @@ class MainWidget(QWidget):
         target_x = max(0, start_pos.x() + self.BUBBLE_DIA - self.PILL_W)
         target_y = max(0, start_pos.y() + self.BUBBLE_DIA - self.PILL_H)
 
-        # 先把窗口扩展到最终大小，面板渲染一帧后截图
+        # 暂停绘制，窗口保持原位
+        self.setUpdatesEnabled(False)
+
+        # 窗口扩到最终大小（但不移动位置，避免闪到新位置）
         self.setMinimumSize(self.PILL_W, self.PILL_H)
         self.setMaximumSize(self.PILL_W, self.PILL_H)
-        self.move(target_x, target_y)
         self._panel.show()
         self._stack.setCurrentIndex(1)
         QApplication.processEvents()
 
         pixmap = self._grab_panel()
 
-        # 隐藏真实面板，显示截图
         self._panel.hide()
         self._anim_label.setPixmap(pixmap)
-        self._anim_label.setGeometry(0, 0, self.PILL_W, self.PILL_H)
-        self._anim_label.show()
-
-        # 动画：截图从球大小缩放到面板大小（在窗口内）
         self._anim_label.setGeometry(
-            self.PILL_W - self.BUBBLE_DIA,  # 右下角对齐
+            self.PILL_W - self.BUBBLE_DIA,
             self.PILL_H - self.BUBBLE_DIA,
             self.BUBBLE_DIA, self.BUBBLE_DIA
         )
+        self._anim_label.show()
 
-        end_geo = QRect(0, 0, self.PILL_W, self.PILL_H)
+        self.setUpdatesEnabled(True)
 
-        anim = QPropertyAnimation(self._anim_label, b"geometry")
-        anim.setDuration(self.ANIM_MS)
-        anim.setEndValue(end_geo)
-        anim.setEasingCurve(QEasingCurve.OutCubic)
-        self._expand_anim = anim
+        # 同时做：窗口位置动画 + 截图缩放动画
+        win_anim = QPropertyAnimation(self, b"pos")
+        win_anim.setDuration(self.ANIM_MS)
+        win_anim.setStartValue(start_pos)
+        win_anim.setEndValue(QPoint(target_x, target_y))
+        win_anim.setEasingCurve(QEasingCurve.OutCubic)
 
-        anim.finished.connect(self._on_expand_done)
-        anim.start()
+        label_anim = QPropertyAnimation(self._anim_label, b"geometry")
+        label_anim.setDuration(self.ANIM_MS)
+        label_anim.setEndValue(QRect(0, 0, self.PILL_W, self.PILL_H))
+        label_anim.setEasingCurve(QEasingCurve.OutCubic)
+
+        self._expand_group = QParallelAnimationGroup()
+        self._expand_group.addAnimation(win_anim)
+        self._expand_group.addAnimation(label_anim)
+        self._expand_group.finished.connect(self._on_expand_done)
+        self._expand_group.start()
 
     def _on_expand_done(self):
         self._anim_label.hide()
