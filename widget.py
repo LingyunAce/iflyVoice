@@ -336,10 +336,11 @@ class ChatPanel(QWidget):
         self.mic_btn = QPushButton("🎤 语音")
         self.mic_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.mic_btn.clicked.connect(lambda: self._main._toggle_recording())
-        tts_btn = QPushButton("🔊 朗读")
-        tts_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.tts_btn = QPushButton("🔊 朗读")
+        self.tts_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.tts_btn.clicked.connect(lambda: self._main._speak_last())
         row2.addWidget(self.mic_btn, 1)
-        row2.addWidget(tts_btn, 1)
+        row2.addWidget(self.tts_btn, 1)
 
         il.addLayout(row1)
         il.addLayout(row2)
@@ -399,6 +400,7 @@ class MainWidget(QWidget):
     sig_transcribe = Signal(str)
     sig_transcribe_err = Signal(str)
     sig_tts_play = Signal(str)
+    sig_tts_done = Signal()
 
     def __init__(self):
         super().__init__()
@@ -412,6 +414,7 @@ class MainWidget(QWidget):
         self._stream_buf = ""
         self._stream_dirty = False
         self._greeting_shown = False
+        self._last_ai_text = ""
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
         self._flush_timer.timeout.connect(self._flush_stream)
@@ -454,7 +457,7 @@ class MainWidget(QWidget):
         self.sig_done.connect(self._on_ai_done)
         self.sig_error.connect(self._on_ai_error)
         self.sig_status.connect(lambda s: self._panel.status_lbl.setText(s))
-        self.sig_tts_play.connect(self._play_tts)
+        self.sig_tts_done.connect(self._on_tts_done)
         self.sig_transcribe.connect(self._on_transcribe_done)
         self.sig_transcribe_err.connect(self._on_transcribe_error)
 
@@ -702,8 +705,10 @@ class MainWidget(QWidget):
         self._panel.status_lbl.setText("")
         self._ai_bubble = None
         _flog(f"[DONE] 完成")
-        if full and len(full) < 600:
-            self._speak(full)
+        if full:
+            self._last_ai_text = full
+            if len(full) < 600:
+                self._speak(full)
 
     def _on_ai_error(self, err):
         self._wait_timer.stop()
@@ -711,50 +716,95 @@ class MainWidget(QWidget):
         self._panel.status_lbl.setText("")
         self._panel.add_bubble(f"[错误] {err}", False)
 
+    def _speak_last(self):
+        if not self._last_ai_text:
+            self._panel.status_lbl.setText("没有可朗读的内容")
+            return
+        self._speak(self._last_ai_text)
+
     def _speak(self, text):
+        _flog(f"[TTS] 开始朗读 len={len(text)}")
+        self._stop_speak()
+        self._panel.tts_btn.setText("⏹ 停止")
+        try:
+            self._panel.tts_btn.clicked.disconnect()
+        except:
+            pass
+        self._panel.tts_btn.clicked.connect(self._stop_speak)
+        self._tts_proc = None
+        self._tts_mp3 = None
         threading.Thread(target=self._do_speak, args=(text,), daemon=True).start()
+
+    def _stop_speak(self):
+        _flog("[TTS] 停止朗读")
+        proc = getattr(self, '_tts_proc', None)
+        if proc and proc.poll() is None:
+            proc.terminate()
+        self._tts_proc = None
+        mp3 = getattr(self, '_tts_mp3', None)
+        if mp3:
+            try:
+                os.unlink(mp3)
+            except Exception:
+                pass
+            self._tts_mp3 = None
+        self._on_tts_done()
 
     def _do_speak(self, text):
         try:
-            payload = json.dumps({
-                "model": "CosyVoice2-0.5B",
-                "input": text,
-                "response_format": "mp3",
-            }).encode()
-
-            req = Request(TTS_URL, data=payload,
-                          headers={"Content-Type": "application/json", "Accept": "audio/mpeg"},
-                          method="POST")
-
-            with urlopen(req, timeout=15) as resp:
-                audio = resp.read()
+            _flog(f"[TTS] 生成音频...")
+            import edge_tts
+            import asyncio
+            import subprocess
 
             mp3 = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
-            with open(mp3, "wb") as f:
-                f.write(audio)
 
-            # QMediaPlayer 必须在主线程创建，用 signal 触发
-            self.sig_tts_play.emit(mp3)
+            async def _gen():
+                communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+                await communicate.save(mp3)
 
+            asyncio.run(_gen())
+
+            if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
+                _flog("[TTS] 生成的音频文件为空")
+                self.sig_tts_done.emit()
+                return
+
+            _flog(f"[TTS] 音频就绪 {os.path.getsize(mp3)} bytes")
+            self._tts_mp3 = mp3
+
+            # 直接在后台线程用 ffplay 播放，避免跨线程 Qt 调用
+            _flog(f"[TTS] 开始播放 {mp3}")
+            self._tts_proc = subprocess.Popen(
+                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", mp3],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            self._tts_proc.wait()
+            _flog(f"[TTS] 播放完成")
+
+            try:
+                os.unlink(mp3)
+            except Exception:
+                pass
+            self._tts_mp3 = None
+            self.sig_tts_done.emit()
+
+        except FileNotFoundError:
+            _flog("[TTS] 错误: ffplay 未安装，请安装 ffmpeg")
+            self.sig_tts_done.emit()
         except Exception as e:
             _flog(f"[TTS] 错误: {e}")
+            self.sig_tts_done.emit()
 
-    def _play_tts(self, mp3):
+    def _on_tts_done(self):
+        self._tts_proc = None
+        self._panel.tts_btn.setText("🔊 朗读")
         try:
-            player = QMediaPlayer()
-            out = QAudioOutput()
-            player.setAudioOutput(out)
-            player.setSource(QUrl.fromLocalFile(mp3))
-            player.play()
-
-            def cleanup():
-                try:
-                    os.unlink(mp3)
-                except Exception:
-                    pass
-            player.playbackChanged.connect(cleanup)
-        except Exception as e:
-            _flog(f"[TTS] 播放错误: {e}")
+            self._panel.tts_btn.clicked.disconnect()
+        except:
+            pass
+        self._panel.tts_btn.clicked.connect(lambda: self._speak_last())
 
     # ── 录音（QMediaCaptureSession + QMediaRecorder）──
     def _toggle_recording(self):
