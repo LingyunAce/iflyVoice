@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\server.py'],
+    ['widget.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\server.py', '.'), ('C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\embedded_static.py', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

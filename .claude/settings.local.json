@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *)",
+      "Bash(taskkill //F //IM python.exe)",
+      "Bash(curl -s --connect-timeout 3 http://127.0.0.1:18766/)",
+      "Bash(curl -s --connect-timeout 3 http://192.168.1.32:11434/api/tags)",
+      "Bash(python3 *)",
+      "Bash(tasklist)",
+      "Bash(pip install *)",
+      "Bash(ffmpeg -version)",
+      "Bash(curl -s http://192.168.1.32:9997/v1/models)",
+      "Bash(curl -s -H \"Authorization: Bearer sk-86ccca26e58a8\" http://192.168.1.32:9997/v1/models)",
+      "Bash(curl -s http://192.168.1.32:9997/status)",
+      "Bash(taskkill //F //IM VoiceAI.exe)"
+    ]
+  }
+}

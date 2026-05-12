@@ -59,6 +59,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("GET")
         elif self.path.startswith("/ddcci/"):
             self._handle_ddcci("GET")
+        elif self.path.startswith("/v1/audio/speech"):
+            self._handle_tts()
         else:
             self._serve_static()
 
@@ -75,6 +77,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("POST")
         elif self.path.startswith("/ddcci/"):
             self._handle_ddcci("POST")
+        elif self.path.startswith("/v1/audio/speech"):
+            self._handle_tts()
         else:
             self.send_error(404)
 
@@ -150,7 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         sock = None
         try:
             sock = socket.create_connection((_OLLAMA_CONFIG["host"], _OLLAMA_CONFIG["port"]), timeout=10)
-            sock.settimeout(None)
+            sock.settimeout(120)   # 防止 recv 无限阻塞（模型首次加载最多等 120s）
             req_lines = [f"{method} {target_path} HTTP/1.0"]
             req_lines.append(f"Host: {_OLLAMA_CONFIG['host']}:{_OLLAMA_CONFIG['port']}")
             if body is not None:
@@ -473,6 +477,42 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(502, {"success": False, "error": f"xinference {e.code}: {err_body[:200]}"})
         except Exception as e:
             _log(f"[SenseVoice] Error: {e}")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _handle_tts(self):
+        """Proxy text-to-speech to CosyVoice2 at 192.168.1.32:9997/v1/audio/speech"""
+        import urllib.request
+        cfg = self.SENSEVOICE_CONFIG
+        target_url = f"{cfg['base_url']}/v1/audio/speech"
+        cl = int(self.headers.get("Content-Length", 0))
+        if cl <= 0:
+            return self._send_json(400, {"success": False, "error": "No request body"})
+        try:
+            original_body = self.rfile.read(cl)
+            req = urllib.request.Request(
+                target_url,
+                data=original_body,
+                headers={
+                    "Authorization": f"Bearer {cfg['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_body = resp.read()
+                ct = resp.headers.get("Content-Type", "audio/mpeg")
+                self.send_response(200)
+                self.send_header("Content-Type", ct)
+                self.send_header("Content-Length", str(len(resp_body)))
+                self._cors_headers()
+                self.end_headers()
+                self.wfile.write(resp_body)
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            _log(f"[TTS] HTTP {e.code}: {err_body[:200]}")
+            self._send_json(502, {"success": False, "error": f"TTS {e.code}: {err_body[:200]}"})
+        except Exception as e:
+            _log(f"[TTS] Error: {e}")
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _handle_native(self, method):
