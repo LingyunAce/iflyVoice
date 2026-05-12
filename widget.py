@@ -13,6 +13,7 @@ from urllib.error import HTTPError
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QScrollArea
 from PySide6.QtWidgets import QSizePolicy, QStackedWidget, QTextEdit, QFrame
+from PySide6.QtWidgets import QGraphicsOpacityEffect
 from PySide6.QtCore import (Qt, QPropertyAnimation, QParallelAnimationGroup,
                              QUrl, QSize, Property, QEasingCurve, QTimer,
                              QSequentialAnimationGroup, QPoint, QRectF, QRect, Signal,
@@ -252,6 +253,11 @@ class ChatPanel(QWidget):
         """)
         self.setAttribute(Qt.WA_StyledBackground)
 
+        # 透明度效果（用于展开/收起淡入淡出动画）
+        self._opacity_effect = QGraphicsOpacityEffect(self)
+        self._opacity_effect.setOpacity(1.0)
+        self.setGraphicsEffect(self._opacity_effect)
+
         ml = QVBoxLayout(self)
         ml.setContentsMargins(0, 0, 0, 0)
         ml.setSpacing(0)
@@ -433,6 +439,11 @@ class MainWidget(QWidget):
         self._panel.hide()
         self._stack.addWidget(self._panel)
 
+        # 截图标签（展开/收起动画用，浮在最上层）
+        self._anim_label = QLabel(self)
+        self._anim_label.hide()
+        self._anim_label.setAttribute(Qt.WA_TransparentForMouseEvents)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self._stack)
@@ -458,79 +469,63 @@ class MainWidget(QWidget):
             self.move(geo.right() - self.width() - 20, geo.bottom() - self.height() - 20)
 
     # ── 展开 / 收起动画 ──────────────────────────────────────
+    def _grab_panel(self):
+        """截取面板当前画面为 QPixmap"""
+        pixmap = QPixmap(self._panel.size())
+        pixmap.fill(Qt.transparent)
+        self._panel.render(pixmap)
+        return pixmap
+
     def _expand(self):
         if self._expanded:
             return
         self._expanded = True
 
-        # 解除 setFixedSize 的锁定，让动画可以改变尺寸
-        self.setMinimumSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
-        self.setMaximumSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
-
         start_pos = self.pos()
-        self._ball_pos = start_pos  # 记住球的位置，收起时回到这里
-        # 展开后保持底部对齐、右对齐（从球的当前位置向上展开）
-        target_x = start_pos.x() + self.BUBBLE_DIA - self.PILL_W
-        target_y = start_pos.y() + self.BUBBLE_DIA - self.PILL_H
-        # 确保不超出屏幕左上角
-        target_x = max(0, target_x)
-        target_y = max(0, target_y)
+        self._ball_pos = start_pos
+        target_x = max(0, start_pos.x() + self.BUBBLE_DIA - self.PILL_W)
+        target_y = max(0, start_pos.y() + self.BUBBLE_DIA - self.PILL_H)
 
-        # 先显示面板，隐藏圆形
+        # 先把窗口扩展到最终大小，面板渲染一帧后截图
+        self.setMinimumSize(self.PILL_W, self.PILL_H)
+        self.setMaximumSize(self.PILL_W, self.PILL_H)
+        self.move(target_x, target_y)
         self._panel.show()
-        self._panel.setWindowOpacity(0)
         self._stack.setCurrentIndex(1)
+        QApplication.processEvents()
 
-        # 尺寸动画
-        self._anim_w = QPropertyAnimation(self, b"minimumWidth")
-        self._anim_w.setDuration(self.ANIM_MS)
-        self._anim_w.setStartValue(self.BUBBLE_DIA)
-        self._anim_w.setEndValue(self.PILL_W)
-        self._anim_w.setEasingCurve(QEasingCurve.OutCubic)
+        pixmap = self._grab_panel()
 
-        self._anim_h = QPropertyAnimation(self, b"minimumHeight")
-        self._anim_h.setDuration(self.ANIM_MS)
-        self._anim_h.setStartValue(self.BUBBLE_DIA)
-        self._anim_h.setEndValue(self.PILL_H)
-        self._anim_h.setEasingCurve(QEasingCurve.OutCubic)
+        # 隐藏真实面板，显示截图
+        self._panel.hide()
+        self._anim_label.setPixmap(pixmap)
+        self._anim_label.setGeometry(0, 0, self.PILL_W, self.PILL_H)
+        self._anim_label.show()
 
-        self._anim_max_w = QPropertyAnimation(self, b"maximumWidth")
-        self._anim_max_w.setDuration(self.ANIM_MS)
-        self._anim_max_w.setStartValue(self.BUBBLE_DIA)
-        self._anim_max_w.setEndValue(self.PILL_W)
+        # 动画：截图从球大小缩放到面板大小（在窗口内）
+        self._anim_label.setGeometry(
+            self.PILL_W - self.BUBBLE_DIA,  # 右下角对齐
+            self.PILL_H - self.BUBBLE_DIA,
+            self.BUBBLE_DIA, self.BUBBLE_DIA
+        )
 
-        self._anim_max_h = QPropertyAnimation(self, b"maximumHeight")
-        self._anim_max_h.setDuration(self.ANIM_MS)
-        self._anim_max_h.setStartValue(self.BUBBLE_DIA)
-        self._anim_max_h.setEndValue(self.PILL_H)
+        end_geo = QRect(0, 0, self.PILL_W, self.PILL_H)
 
-        # 位置动画
-        self._anim_pos = QPropertyAnimation(self, b"pos")
-        self._anim_pos.setDuration(self.ANIM_MS)
-        self._anim_pos.setStartValue(start_pos)
-        self._anim_pos.setEndValue(QPoint(target_x, target_y))
-        self._anim_pos.setEasingCurve(QEasingCurve.OutCubic)
+        anim = QPropertyAnimation(self._anim_label, b"geometry")
+        anim.setDuration(self.ANIM_MS)
+        anim.setEndValue(end_geo)
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._expand_anim = anim
 
-        # 面板淡入
-        self._anim_opacity = QPropertyAnimation(self._panel, b"windowOpacity")
-        self._anim_opacity.setDuration(200)
-        self._anim_opacity.setStartValue(0.0)
-        self._anim_opacity.setEndValue(1.0)
+        anim.finished.connect(self._on_expand_done)
+        anim.start()
 
-        self._expand_group = QParallelAnimationGroup()
-        self._expand_group.addAnimation(self._anim_w)
-        self._expand_group.addAnimation(self._anim_h)
-        self._expand_group.addAnimation(self._anim_max_w)
-        self._expand_group.addAnimation(self._anim_max_h)
-        self._expand_group.addAnimation(self._anim_pos)
-
-        self._expand_seq = QSequentialAnimationGroup()
-        self._expand_seq.addAnimation(self._expand_group)
-        self._expand_seq.addAnimation(self._anim_opacity)
-        self._expand_seq.start()
-
-        # 动画结束后聚焦输入框
-        QTimer.singleShot(self.ANIM_MS + 250, lambda: self._panel.input_box.setFocus())
+    def _on_expand_done(self):
+        self._anim_label.hide()
+        self._anim_label.clear()
+        self._panel._opacity_effect.setOpacity(1.0)
+        self._panel.show()
+        self._panel.input_box.setFocus()
 
     def _collapse(self):
         if not self._expanded:
@@ -538,62 +533,39 @@ class MainWidget(QWidget):
 
         target_pos = getattr(self, '_ball_pos', self.pos())
 
-        # 面板淡出
-        fade_out = QPropertyAnimation(self._panel, b"windowOpacity")
-        fade_out.setDuration(150)
-        fade_out.setStartValue(1.0)
-        fade_out.setEndValue(0.0)
-        fade_out.finished.connect(lambda: self._panel.hide())
+        # 截取当前面板画面
+        pixmap = self._grab_panel()
+        self._panel.hide()
+        self._anim_label.setPixmap(pixmap)
+        self._anim_label.setGeometry(0, 0, self.PILL_W, self.PILL_H)
+        self._anim_label.show()
 
-        # 尺寸缩回
-        anim_w = QPropertyAnimation(self, b"minimumWidth")
-        anim_w.setDuration(self.ANIM_MS)
-        anim_w.setStartValue(self.PILL_W)
-        anim_w.setEndValue(self.BUBBLE_DIA)
-        anim_w.setEasingCurve(QEasingCurve.InCubic)
+        # 动画：截图从面板大小缩放到球大小（缩到右下角）
+        end_geo = QRect(
+            self.PILL_W - self.BUBBLE_DIA,
+            self.PILL_H - self.BUBBLE_DIA,
+            self.BUBBLE_DIA, self.BUBBLE_DIA
+        )
 
-        anim_h = QPropertyAnimation(self, b"minimumHeight")
-        anim_h.setDuration(self.ANIM_MS)
-        anim_h.setStartValue(self.PILL_H)
-        anim_h.setEndValue(self.BUBBLE_DIA)
-        anim_h.setEasingCurve(QEasingCurve.InCubic)
+        anim = QPropertyAnimation(self._anim_label, b"geometry")
+        anim.setDuration(self.ANIM_MS)
+        anim.setEndValue(end_geo)
+        anim.setEasingCurve(QEasingCurve.InCubic)
+        self._collapse_anim = anim
 
-        anim_max_w = QPropertyAnimation(self, b"maximumWidth")
-        anim_max_w.setDuration(self.ANIM_MS)
-        anim_max_w.setStartValue(self.PILL_W)
-        anim_max_w.setEndValue(self.BUBBLE_DIA)
-
-        anim_max_h = QPropertyAnimation(self, b"maximumHeight")
-        anim_max_h.setDuration(self.ANIM_MS)
-        anim_max_h.setStartValue(self.PILL_H)
-        anim_max_h.setEndValue(self.BUBBLE_DIA)
-
-        anim_pos = QPropertyAnimation(self, b"pos")
-        anim_pos.setDuration(self.ANIM_MS)
-        anim_pos.setStartValue(self.pos())
-        anim_pos.setEndValue(target_pos)
-        anim_pos.setEasingCurve(QEasingCurve.InCubic)
-
-        shape_group = QParallelAnimationGroup()
-        shape_group.addAnimation(anim_w)
-        shape_group.addAnimation(anim_h)
-        shape_group.addAnimation(anim_max_w)
-        shape_group.addAnimation(anim_max_h)
-        shape_group.addAnimation(anim_pos)
-
-        self._collapse_seq = QSequentialAnimationGroup()
-        self._collapse_seq.addAnimation(fade_out)
-        self._collapse_seq.addAnimation(shape_group)
-        self._collapse_seq.finished.connect(self._on_collapse_done)
-        self._collapse_seq.start()
+        anim.finished.connect(self._on_collapse_done)
+        anim.start()
 
     def _on_collapse_done(self):
         self._expanded = False
+        self._anim_label.hide()
+        self._anim_label.clear()
+        self._panel.hide()
+        self._panel._opacity_effect.setOpacity(1.0)
         self._stack.setCurrentIndex(0)
         self.setFixedSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        # 移回展开前球的位置
         if hasattr(self, '_ball_pos'):
             self.move(self._ball_pos)
 
@@ -891,7 +863,6 @@ class MainWidget(QWidget):
 
     def _on_transcribe_done(self, text):
         self._panel.status_lbl.setText("")
-        self._panel.input_box.setText(text)
         self._on_user_message(text)
 
     def _on_transcribe_error(self, err):
