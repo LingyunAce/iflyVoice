@@ -411,6 +411,7 @@ class MainWidget(QWidget):
         self._audio_input = None
         self._stream_buf = ""
         self._stream_dirty = False
+        self._greeting_shown = False
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
         self._flush_timer.timeout.connect(self._flush_stream)
@@ -533,6 +534,9 @@ class MainWidget(QWidget):
         self._panel._opacity_effect.setOpacity(1.0)
         self._panel.show()
         self._panel.input_box.setFocus()
+        if not self._greeting_shown:
+            self._greeting_shown = True
+            self._panel.add_bubble("您好，我是您的AI助手，我能帮您调节亮度、对比度、音量等，有什么需求我可以帮您？", False)
 
     def _collapse(self):
         if not self._expanded:
