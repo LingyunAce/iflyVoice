@@ -236,23 +236,34 @@ class CircleButton(QWidget):
         self.setFixedSize(56, 56)
         self._hovered = False
         self._pressed = False
-        self._recording = False
-        self._rec_phase = 0
-        self._rec_timer = QTimer(self)
-        self._rec_timer.timeout.connect(self._toggle_rec)
+        self._anim_state = "idle"
+        self._anim_phase = 0
+        self._anim_timer = QTimer(self)
+        self._anim_timer.timeout.connect(self._tick_anim)
         self.setCursor(QCursor(Qt.PointingHandCursor))
 
-    def set_recording(self, on):
-        self._recording = on
-        if on:
-            self._rec_timer.start(400)
-        else:
-            self._rec_timer.stop()
-            self._rec_phase = 0
+    def set_anim_state(self, state):
+        """设置动画状态: idle, listening, wake_detected, command_listening, processing, speaking, paused"""
+        self._anim_state = state
+        self._anim_phase = 0
+        if state == "idle":
+            self._anim_timer.stop()
+        elif state == "listening":
+            self._anim_timer.start(500)
+        elif state == "wake_detected":
+            self._anim_timer.start(150)
+        elif state == "command_listening":
+            self._anim_timer.start(300)
+        elif state == "processing":
+            self._anim_timer.start(100)
+        elif state == "speaking":
+            self._anim_timer.start(400)
+        elif state == "paused":
+            self._anim_timer.stop()
         self.update()
 
-    def _toggle_rec(self):
-        self._rec_phase = (self._rec_phase + 1) % 2
+    def _tick_anim(self):
+        self._anim_phase += 1
         self.update()
 
     def paintEvent(self, event):
@@ -261,8 +272,30 @@ class CircleButton(QWidget):
         p.setPen(Qt.NoPen)
         s = self.width()
 
-        if self._recording:
-            bg = QColor(255, 107, 107, 230).lighter(115) if self._rec_phase else QColor(255, 107, 107, 230)
+        state = self._anim_state
+        phase = self._anim_phase
+
+        # 背景色
+        if state == "listening":
+            # 绿色呼吸脉冲
+            alpha = 180 + int(75 * abs((phase % 4) - 2) / 2)
+            bg = QColor(34, 197, 94, alpha)
+        elif state == "wake_detected":
+            # 白色闪烁
+            bg = QColor(255, 255, 255, 200) if phase % 2 == 0 else QColor(34, 197, 94, 200)
+        elif state == "command_listening":
+            # 蓝色脉冲
+            alpha = 180 + int(75 * abs((phase % 4) - 2) / 2)
+            bg = QColor(59, 130, 246, alpha)
+        elif state == "processing":
+            # 蓝灰色
+            bg = QColor(100, 116, 139, 200)
+        elif state == "speaking":
+            # 蓝色发光
+            bg = QColor(59, 130, 246, 200).lighter(115) if phase % 2 == 0 else QColor(59, 130, 246, 200)
+        elif state == "paused":
+            # 灰色（禁用状态）
+            bg = QColor(120, 120, 120, 180)
         elif self._pressed:
             bg = QColor("#92400E")
         elif self._hovered:
@@ -273,18 +306,52 @@ class CircleButton(QWidget):
         p.setBrush(QBrush(bg))
         p.drawEllipse(0, 0, s, s)
 
-        if self._recording:
-            box = s * 0.28
-            cx, cy = s / 2, s / 2
+        # processing: 旋转弧
+        if state == "processing":
             p.setPen(QPen(Qt.white, 2.5))
             p.setBrush(Qt.NoBrush)
-            p.drawRect(int(cx - box), int(cy - box), int(box * 2), int(box * 2))
-        else:
-            # 矢量绘制 "C" 字母，边缘始终平滑
+            span = 90 * 16
+            start = (phase * 30) % 360
+            p.drawArc(4, 4, s - 8, s - 8, start * 16, span)
+        elif state == "idle":
+            # 矢量绘制 "C" 字母
             p.setPen(QPen(Qt.white, max(2, s // 10)))
             p.setBrush(Qt.NoBrush)
             p.setFont(QFont("Arial", max(10, int(s * 0.48)), QFont.Bold))
             p.drawText(0, 0, s, s, Qt.AlignCenter, "C")
+        elif state == "paused":
+            # 禁用麦克风图标：麦克风 + 斜杠
+            p.setPen(QPen(QColor(200, 200, 200), 2))
+            cx, cy = s / 2, s / 2
+            # 麦克风图标
+            mic_w, mic_h = s * 0.16, s * 0.28
+            p.setBrush(QBrush(QColor(200, 200, 200)))
+            p.drawRoundedRect(int(cx - mic_w), int(cy - mic_h), int(mic_w * 2), int(mic_h * 2), 3, 3)
+            # 底部弧线
+            p.setBrush(Qt.NoBrush)
+            arc_r = s * 0.22
+            p.drawArc(int(cx - arc_r), int(cy - mic_h * 0.3), int(arc_r * 2), int(arc_r * 2), 0, 180 * 16)
+            # 底部竖线
+            p.drawLine(int(cx), int(cy + arc_r * 0.7), int(cx), int(cy + arc_r * 1.1))
+            # 斜杠（禁用标志）
+            p.setPen(QPen(QColor(255, 80, 80), 2.5))
+            slash_len = s * 0.35
+            p.drawLine(int(cx - slash_len), int(cy + slash_len), int(cx + slash_len), int(cy - slash_len))
+        else:
+            # listening / wake_detected / command_listening / speaking: 麦克风图标
+            p.setPen(QPen(Qt.white, 2))
+            cx, cy = s / 2, s / 2
+            # 简化的麦克风图标
+            mic_w, mic_h = s * 0.16, s * 0.28
+            p.setBrush(QBrush(Qt.white))
+            p.drawRoundedRect(int(cx - mic_w), int(cy - mic_h), int(mic_w * 2), int(mic_h * 2), 3, 3)
+            # 底部弧线
+            p.setBrush(Qt.NoBrush)
+            arc_r = s * 0.22
+            p.drawArc(int(cx - arc_r), int(cy - mic_h * 0.3), int(arc_r * 2), int(arc_r * 2), 0, 180 * 16)
+            # 底部竖线
+            p.drawLine(int(cx), int(cy + arc_r * 0.7), int(cx), int(cy + arc_r * 1.1))
+
         p.end()
 
     def enterEvent(self, event):
@@ -432,13 +499,9 @@ class ChatPanel(QWidget):
 
         row2 = QHBoxLayout()
         row2.setSpacing(6)
-        self.mic_btn = QPushButton("🎤 语音")
-        self.mic_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.mic_btn.clicked.connect(lambda: self._main._toggle_recording())
         self.tts_btn = QPushButton("🔊 朗读")
         self.tts_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         self.tts_btn.clicked.connect(lambda: self._main._speak_last())
-        row2.addWidget(self.mic_btn, 1)
         row2.addWidget(self.tts_btn, 1)
 
         il.addLayout(row1)
@@ -493,7 +556,7 @@ class PillMenu(QWidget):
     def __init__(self, main_widget, parent=None):
         super().__init__(parent)
         self._main = main_widget
-        self._mic_active = False
+        self._mic_active = True  # 默认麦克风开启
         self.setFixedSize(self.PILL_MENU_W, self.PILL_MENU_H)
         self.setAttribute(Qt.WA_TranslucentBackground, False)
         self.setAutoFillBackground(False)
@@ -518,7 +581,7 @@ class PillMenu(QWidget):
 
         self.mic_btn = QPushButton("🎤")
         self.mic_btn.setFixedSize(48, 40)
-        self.mic_btn.setToolTip("开启麦克风")
+        self.mic_btn.setToolTip("禁用麦克风")  # 默认开启，所以显示禁用
         self.mic_btn.setStyleSheet(btn_style)
         self.mic_btn.clicked.connect(self._toggle_mic)
 
@@ -563,16 +626,23 @@ class PillMenu(QWidget):
         p.end()
 
     def _toggle_mic(self):
+        pipeline = getattr(self._main, '_pipeline', None)
+        if not pipeline:
+            return
         if self._mic_active:
+            # 禁用麦克风
             self._mic_active = False
-            self.mic_btn.setText("🎤")
-            self.mic_btn.setToolTip("开启麦克风")
-            self._main._stop_recording()
+            self.mic_btn.setText("🔇")
+            self.mic_btn.setToolTip("启用麦克风")
+            pipeline.stop()
+            self._main._circle.set_anim_state("paused")
         else:
+            # 启用麦克风
             self._mic_active = True
-            self.mic_btn.setText("⏹")
-            self.mic_btn.setToolTip("停止录音")
-            self._main._start_recording(pill=True)
+            self.mic_btn.setText("🎤")
+            self.mic_btn.setToolTip("禁用麦克风")
+            pipeline.start()
+            self._main._circle.set_anim_state("idle")
         self.update()
 
     def _open_settings(self):
@@ -597,26 +667,21 @@ class MainWidget(QWidget):
     sig_done = Signal(str)
     sig_error = Signal(str)
     sig_status = Signal(str)      # 跨线程更新状态文字
-    sig_transcribe = Signal(str)
-    sig_transcribe_err = Signal(str)
     sig_tts_play = Signal(str)
     sig_tts_done = Signal()
 
-    def __init__(self):
+    def __init__(self, pipeline=None):
         super().__init__()
         self._expanded = False
         self._pill_shown = False
-        self._recording = False
         self._chat_cancelled = False
         self._ai_bubble = None
-        self._audio_recorder = None
-        self._audio_session = None
-        self._audio_input = None
         self._stream_buf = ""
         self._stream_dirty = False
         self._greeting_shown = False
         self._last_ai_text = ""
         self._tts_muted = False
+        self._pipeline = pipeline
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
         self._flush_timer.timeout.connect(self._flush_stream)
@@ -666,8 +731,15 @@ class MainWidget(QWidget):
         self.sig_error.connect(self._on_ai_error)
         self.sig_status.connect(lambda s: self._panel.status_lbl.setText(s))
         self.sig_tts_done.connect(self._on_tts_done)
-        self.sig_transcribe.connect(self._on_transcribe_done)
-        self.sig_transcribe_err.connect(self._on_transcribe_error)
+
+        # 连接管线信号
+        if self._pipeline:
+            self._pipeline.state_changed.connect(self._on_pipeline_state)
+            self._pipeline.wake_word_detected.connect(self._on_wake_word)
+            self._pipeline.command_captured.connect(self._on_pipeline_command)
+            self._pipeline.ai_response_stream.connect(self._on_stream_token)
+            self._pipeline.ai_response_done.connect(self._on_ai_done)
+            self._pipeline.error_occurred.connect(self._on_pipeline_error)
 
         # 初始：只显示圆形
         self.setFixedSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
@@ -744,6 +816,7 @@ class MainWidget(QWidget):
         self._anim_label.clear()
         self._panel._opacity_effect.setOpacity(1.0)
         self._panel.show()
+        self._circle.hide()
         self._panel.input_box.setFocus()
         if not self._greeting_shown:
             self._greeting_shown = True
@@ -785,6 +858,7 @@ class MainWidget(QWidget):
         self._panel.hide()
         self._panel._opacity_effect.setOpacity(1.0)
         self._stack.setCurrentIndex(0)
+        self._circle.show()
         self.setFixedSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
@@ -985,6 +1059,9 @@ class MainWidget(QWidget):
         _flog(f"[DONE] 完成")
         if full:
             self._last_ai_text = full
+            # 通知管线 TTS 开始
+            if self._pipeline:
+                self._pipeline.notify_tts_start()
             self._speak(full)
 
     def _on_ai_error(self, err):
@@ -1082,145 +1159,39 @@ class MainWidget(QWidget):
         except:
             pass
         self._panel.tts_btn.clicked.connect(lambda: self._speak_last())
+        # 通知管线 TTS 结束
+        if self._pipeline:
+            self._pipeline.notify_tts_done()
 
-    # ── 录音（QMediaCaptureSession + QMediaRecorder）──
-    def _toggle_recording(self):
-        if self._recording:
-            self._stop_recording()
-        else:
-            self._start_recording()
+    # ── 管线状态处理 ──────────────────────────────────────────
+    def _on_pipeline_state(self, state):
+        """管线状态变化，更新 UI"""
+        self._circle.set_anim_state(state)
+        state_text = {
+            "idle": "",
+            "listening": "正在聆听...",
+            "wake_detected": "唤醒词检测到!",
+            "command_listening": "正在听取指令...",
+            "processing": "思考中...",
+            "speaking": "",
+            "paused": "已暂停",
+        }
+        self._panel.status_lbl.setText(state_text.get(state, ""))
 
-    def _start_recording(self, pill=False):
-        _log("[REC] 开始录音")
-        self._recording = True
-        self._rec_from_pill = pill
-        if not pill:
-            self._circle.set_recording(True)
-            self._panel.mic_btn.setText("■ 停止")
-            self._panel.status_lbl.setText("正在录音...")
+    def _on_wake_word(self, word):
+        """唤醒词检测到，自动展开面板"""
+        _flog(f"[唤醒] 检测到: {word}")
+        if not self._expanded:
+            self._expand()
 
-        try:
-            self._rec_chunks = []
-            self._rec_stream = sd.InputStream(
-                samplerate=16000, channels=1, dtype='int16',
-                callback=self._audio_callback
-            )
-            self._rec_stream.start()
-            _log("[REC] 录音中 (sounddevice)")
+    def _on_pipeline_command(self, text):
+        """管线识别到指令，只显示气泡（不触发 LLM，管线内部已处理）"""
+        self._panel.add_bubble(text, True)
 
-            QTimer.singleShot(30000, self._stop_recording)
-
-        except Exception as e:
-            _log(f"[REC] 录音失败: {e}")
-            if not pill:
-                self._panel.status_lbl.setText(f"录音失败: {e}")
-                self._circle.set_recording(False)
-                self._panel.mic_btn.setText("🎤 语音")
-            self._recording = False
-
-    def _audio_callback(self, indata, frames, time_info, status):
-        if self._recording:
-            self._rec_chunks.append(indata.copy())
-
-    def _stop_recording(self):
-        if not self._recording:
-            return
-        _log("[REC] 停止录音")
-        self._recording = False
-        pill = getattr(self, '_rec_from_pill', False)
-        if not pill:
-            self._circle.set_recording(False)
-            self._panel.mic_btn.setText("🎤 语音")
-            self._panel.status_lbl.setText("识别中...")
-
-        try:
-            if self._rec_stream:
-                self._rec_stream.stop()
-                self._rec_stream.close()
-
-            # 合并 PCM 录音块
-            audio = np.concatenate(self._rec_chunks, axis=0)
-            pcm_data = audio.tobytes()
-            _log(f"[REC] PCM: {len(pcm_data)} bytes, {len(audio)} samples")
-
-            # 通过 ffmpeg 转为 webm/opus（和浏览器 MediaRecorder 输出一致）
-            self._rec_file = os.path.join(tempfile.gettempdir(), f"voice_{uuid.uuid4().hex}.webm")
-            import subprocess
-            proc = subprocess.run(
-                ["ffmpeg", "-y", "-f", "s16le", "-ar", "16000", "-ac", "1",
-                 "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", self._rec_file],
-                input=pcm_data, capture_output=True, timeout=15
-            )
-            if proc.returncode != 0:
-                _log(f"[REC] ffmpeg 错误: {proc.stderr.decode('utf-8', errors='replace')[:200]}")
-                self.sig_transcribe_err.emit("ffmpeg 转码失败")
-                return
-
-            _log(f"[REC] webm 已保存: {self._rec_file}")
-            threading.Thread(target=self._transcribe, daemon=True).start()
-
-        except Exception as e:
-            _log(f"[REC] 停止失败: {e}")
-            self._panel.status_lbl.setText(f"录音错误: {e}")
-
-    def _transcribe(self):
-        """上传 webm/opus 录音到 /sensevoice/transcribe（和 Web UI 一致）"""
-        try:
-            boundary = uuid.uuid4().hex
-            with open(self._rec_file, "rb") as f:
-                audio_data = f.read()
-
-            body = b""
-            body += f"--{boundary}\r\n".encode()
-            body += b'Content-Disposition: form-data; name="file"; filename="recording.webm"\r\n'
-            body += b"Content-Type: audio/webm\r\n\r\n"
-            body += audio_data
-            body += b"\r\n"
-            body += f"--{boundary}--\r\n".encode()
-
-            conn = http.client.HTTPConnection("127.0.0.1", 18766, timeout=30)
-            conn.request("POST", "/sensevoice/transcribe", body=body,
-                         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
-            resp = conn.getresponse()
-            data = json.loads(resp.read().decode("utf-8"))
-            conn.close()
-
-            text = data.get("text", "") if data.get("success") else ""
-            error = data.get("error", "")
-            _log(f"[REC] 识别结果: text='{text}'")
-
-            if text:
-                self.sig_transcribe.emit(text)
-            else:
-                _log(f"[REC] 识别失败: {error[:100]}")
-                self.sig_transcribe_err.emit(error or "无识别结果")
-
-        except Exception as e:
-            _log(f"[REC] 识别错误: {e}")
-            self.sig_transcribe_err.emit(str(e))
-        finally:
-            try:
-                os.unlink(self._rec_file)
-            except:
-                pass
-
-    def _on_transcribe_done(self, text):
-        self._panel.status_lbl.setText("")
-        self._on_user_message(text)
-        # 药丸录音：识别完成后重置按钮（AI回复+TTS会自动触发）
-        if getattr(self, '_rec_from_pill', False):
-            self._pill_menu._mic_active = False
-            self._pill_menu.mic_btn.setText("🎤")
-            self._pill_menu.mic_btn.setToolTip("开启麦克风")
-            self._pill_menu.update()
-
-    def _on_transcribe_error(self, err):
-        self._panel.status_lbl.setText(f"识别失败: {err[:50]}")
-        if getattr(self, '_rec_from_pill', False):
-            self._pill_menu._mic_active = False
-            self._pill_menu.mic_btn.setText("🎤")
-            self._pill_menu.mic_btn.setToolTip("开启麦克风")
-            self._pill_menu.update()
+    def _on_pipeline_error(self, err):
+        """管线错误"""
+        _flog(f"[管线] 错误: {err}")
+        self._panel.status_lbl.setText(f"错误: {err[:50]}")
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1249,7 +1220,15 @@ def main():
     app.setApplicationName("VoiceAI")
     app.setQuitOnLastWindowClosed(False)
 
-    w = MainWidget()
+    # 创建语音管线
+    from voice_pipeline import VoicePipeline
+    pipeline = VoicePipeline(wake_word="小助手", server_url=SERVER_URL)
+
+    w = MainWidget(pipeline=pipeline)
+
+    # 启动管线
+    pipeline.start()
+
     app.aboutToQuit.connect(w.close)
     sys.exit(app.exec())
 
