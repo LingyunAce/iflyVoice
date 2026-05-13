@@ -3,7 +3,7 @@
 """
 Voice AI Widget — 圆形悬浮球变形为胶囊聊天面板 + 内嵌 HTTP 服务
 """
-import sys, os, json, time, threading, tempfile, uuid, wave
+import sys, os, json, time, threading, tempfile, uuid, wave, subprocess, asyncio, re
 import http.client
 import numpy as np
 import sounddevice as sd
@@ -44,6 +44,48 @@ def _flog(msg):
     print(f"[VoiceAI] {line}", file=sys.stderr, flush=True)
 
 
+def _strip_md(text):
+    """去掉 markdown 格式符号，保留纯文本内容供 TTS 朗读"""
+    if not text:
+        return text
+    s = text
+    # 代码块 ```...``` → 去掉
+    s = re.sub(r'```[\s\S]*?```', '', s)
+    # 行内代码 `...` → 保留内容
+    s = re.sub(r'`([^`]*)`', r'\1', s)
+    # 图片 ![alt](url) → alt
+    s = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', s)
+    # 链接 [text](url) → text
+    s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)
+    # 标题 # ## ### → 去掉 # 号
+    s = re.sub(r'^#{1,6}\s+', '', s, flags=re.MULTILINE)
+    # 加粗 **text** 或 __text__
+    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+    s = re.sub(r'__(.+?)__', r'\1', s)
+    # 斜体 *text* 或 _text_
+    s = re.sub(r'\*(.+?)\*', r'\1', s)
+    s = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', s)
+    # 删除线 ~~text~~
+    s = re.sub(r'~~(.+?)~~', r'\1', s)
+    # 引用 > text
+    s = re.sub(r'^>\s?', '', s, flags=re.MULTILINE)
+    # 无序列表 - / * / +
+    s = re.sub(r'^[\s]*[-*+]\s+', '', s, flags=re.MULTILINE)
+    # 有序列表 1. 2.
+    s = re.sub(r'^[\s]*\d+\.\s+', '', s, flags=re.MULTILINE)
+    # 水平线 --- 或 *** 或 ___
+    s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
+    # 表格 | 分隔符行
+    s = re.sub(r'^\|?[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$', '', s, flags=re.MULTILINE)
+    # 表格行 → 去掉 |，保留文字
+    s = re.sub(r'\|\s*', ' ', s)
+    # HTML 标签
+    s = re.sub(r'<[^>]+>', '', s)
+    # 多余空行压缩
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    return s.strip()
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Icon Drawing
 # ═══════════════════════════════════════════════════════════════════
@@ -58,6 +100,55 @@ def draw_close_icon(size=18):
     p.drawLine(size - 3, 3, 3, size - 3)
     p.end()
     return pix
+
+
+def _md_to_html(text):
+    """将 markdown 转为 HTML，供气泡显示"""
+    if not text:
+        return ""
+    import html as _html
+    s = text
+    # 代码块 ```...``` → <pre>
+    def _code_block(m):
+        code = _html.escape(m.group(1).strip())
+        return f'<pre style="background:#f0f0f0;border-radius:4px;padding:6px;margin:4px 0;white-space:pre-wrap;font-size:9pt;">{code}</pre>'
+    s = re.sub(r'```(\w*)\n?([\s\S]*?)```', _code_block, s)
+    # 行内代码
+    s = re.sub(r'`([^`\n]+)`', r'<code style="background:#f0f0f0;border-radius:3px;padding:1px 4px;font-size:9pt;">\1</code>', s)
+    # 图片 → alt 文字
+    s = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', s)
+    # 链接
+    s = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" style="color:#2563eb;">\1</a>', s)
+    # 标题
+    s = re.sub(r'^#### (.+)$', r'<b style="font-size:10pt;">\1</b>', s, flags=re.MULTILINE)
+    s = re.sub(r'^### (.+)$', r'<b style="font-size:10.5pt;">\1</b>', s, flags=re.MULTILINE)
+    s = re.sub(r'^## (.+)$', r'<b style="font-size:11pt;">\1</b>', s, flags=re.MULTILINE)
+    s = re.sub(r'^# (.+)$', r'<b style="font-size:11.5pt;">\1</b>', s, flags=re.MULTILINE)
+    # 加粗
+    s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
+    s = re.sub(r'__(.+?)__', r'<b>\1</b>', s)
+    # 斜体
+    s = re.sub(r'\*(.+?)\*', r'<i>\1</i>', s)
+    s = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'<i>\1</i>', s)
+    # 删除线
+    s = re.sub(r'~~(.+?)~~', r'<s>\1</s>', s)
+    # 引用
+    s = re.sub(r'^>\s?(.+)$', r'<span style="color:#888;border-left:3px solid #ccc;padding-left:6px;">\1</span>', s, flags=re.MULTILINE)
+    # 水平线
+    s = re.sub(r'^[-*_]{3,}\s*$', '<hr style="border:none;border-top:1px solid #ddd;margin:6px 0;">', s, flags=re.MULTILINE)
+    # 无序列表
+    s = re.sub(r'^[\s]*[-*+]\s+(.+)$', r'&bull; \1', s, flags=re.MULTILINE)
+    # 有序列表保持数字
+    s = re.sub(r'^[\s]*(\d+)\.\s+(.+)$', r'\1. \2', s, flags=re.MULTILINE)
+    # 表格行 → 简化
+    s = re.sub(r'^\|?[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$', '', s, flags=re.MULTILINE)
+    s = re.sub(r'^\|(.+)\|$', lambda m: m.group(1).replace('|', ' | '), s, flags=re.MULTILINE)
+    # HTML 标签保留（已处理的）
+    # 换行
+    s = s.replace('\n', '<br>')
+    # 多余 <br> 压缩
+    s = re.sub(r'(<br>){3,}', '<br><br>', s)
+    return s
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -109,18 +200,23 @@ class ChatBubble(QLabel):
     def _set_content(self, text):
         """设置文本并动态切换 wordWrap 模式"""
         self.full_text = text
-        super().setText(text)
-        natural = self._natural_width(text)
-        if natural <= self.MAX_BUBBLE_W:
-            # 短文本：关闭换行，不设任何宽度约束
-            # setWordWrap(False) 时 sizeHint = 文本实际宽度，完全精确
-            # QSizePolicy.Maximum 保证不会被布局拉伸
-            self.setWordWrap(False)
-            # 清除可能残留的固定宽度
-            self.setMinimumWidth(0)
-            self.setMaximumWidth(16777215)
+        if self.is_user:
+            # 用户消息：纯文本
+            self.setTextFormat(Qt.PlainText)
+            super().setText(text)
+            natural = self._natural_width(text)
+            if natural <= self.MAX_BUBBLE_W:
+                self.setWordWrap(False)
+                self.setMinimumWidth(0)
+                self.setMaximumWidth(16777215)
+            else:
+                self.setWordWrap(True)
+                self.setFixedWidth(self.MAX_BUBBLE_W)
         else:
-            # 长文本：开启换行，固定宽度
+            # AI 消息：渲染 markdown → HTML
+            self.setTextFormat(Qt.RichText)
+            html = _md_to_html(text)
+            super().setText(html)
             self.setWordWrap(True)
             self.setFixedWidth(self.MAX_BUBBLE_W)
 
@@ -707,8 +803,7 @@ class MainWidget(QWidget):
         _flog(f"[DONE] 完成")
         if full:
             self._last_ai_text = full
-            if len(full) < 600:
-                self._speak(full)
+            self._speak(full)
 
     def _on_ai_error(self, err):
         self._wait_timer.stop()
@@ -723,62 +818,60 @@ class MainWidget(QWidget):
         self._speak(self._last_ai_text)
 
     def _speak(self, text):
-        _flog(f"[TTS] 开始朗读 len={len(text)}")
-        self._stop_speak()
+        clean = _strip_md(text)
+        if not clean:
+            return
+        _flog(f"[TTS] 开始朗读 len={len(clean)}")
+        # 杀掉之前的播放进程，不调用 _on_tts_done
+        for attr in ('_tts_proc', '_tts_ffmpeg'):
+            proc = getattr(self, attr, None)
+            if proc and proc.poll() is None:
+                proc.terminate()
+            setattr(self, attr, None)
         self._panel.tts_btn.setText("⏹ 停止")
         try:
             self._panel.tts_btn.clicked.disconnect()
         except:
             pass
         self._panel.tts_btn.clicked.connect(self._stop_speak)
-        self._tts_proc = None
-        self._tts_mp3 = None
-        threading.Thread(target=self._do_speak, args=(text,), daemon=True).start()
+        threading.Thread(target=self._do_speak, args=(clean,), daemon=True).start()
 
     def _stop_speak(self):
         _flog("[TTS] 停止朗读")
-        proc = getattr(self, '_tts_proc', None)
-        if proc and proc.poll() is None:
-            proc.terminate()
-        self._tts_proc = None
-        mp3 = getattr(self, '_tts_mp3', None)
-        if mp3:
-            try:
-                os.unlink(mp3)
-            except Exception:
-                pass
-            self._tts_mp3 = None
+        for attr in ('_tts_proc', '_tts_ffmpeg'):
+            proc = getattr(self, attr, None)
+            if proc and proc.poll() is None:
+                proc.terminate()
+            setattr(self, attr, None)
         self._on_tts_done()
 
     def _do_speak(self, text):
+        """edge-tts 流式写入临时文件 → ffplay 播放"""
         try:
-            _flog(f"[TTS] 生成音频...")
             import edge_tts
-            import asyncio
-            import subprocess
 
+            _flog(f"[TTS] 流式生成...")
             mp3 = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
 
-            async def _gen():
-                communicate = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-                await communicate.save(mp3)
+            # edge-tts 流式写入文件（比 .save() 更快开始写入）
+            async def _stream():
+                comm = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+                with open(mp3, "wb") as f:
+                    async for chunk in comm.stream():
+                        if chunk["type"] == "audio" and chunk["data"]:
+                            f.write(chunk["data"])
 
-            asyncio.run(_gen())
+            asyncio.run(_stream())
 
             if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
                 _flog("[TTS] 生成的音频文件为空")
                 self.sig_tts_done.emit()
                 return
 
-            _flog(f"[TTS] 音频就绪 {os.path.getsize(mp3)} bytes")
-            self._tts_mp3 = mp3
-
-            # 直接在后台线程用 ffplay 播放，避免跨线程 Qt 调用
-            _flog(f"[TTS] 开始播放 {mp3}")
+            _flog(f"[TTS] 音频就绪 {os.path.getsize(mp3)} bytes，开始播放")
             self._tts_proc = subprocess.Popen(
                 ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", mp3],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             self._tts_proc.wait()
             _flog(f"[TTS] 播放完成")
@@ -787,11 +880,11 @@ class MainWidget(QWidget):
                 os.unlink(mp3)
             except Exception:
                 pass
-            self._tts_mp3 = None
+            self._tts_proc = None
             self.sig_tts_done.emit()
 
         except FileNotFoundError:
-            _flog("[TTS] 错误: ffplay 未安装，请安装 ffmpeg")
+            _flog("[TTS] 错误: ffplay 未安装")
             self.sig_tts_done.emit()
         except Exception as e:
             _flog(f"[TTS] 错误: {e}")
