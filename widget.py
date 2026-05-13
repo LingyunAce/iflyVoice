@@ -229,6 +229,7 @@ class ChatBubble(QLabel):
 # ═══════════════════════════════════════════════════════════════════
 class CircleButton(QWidget):
     clicked = Signal()
+    right_clicked = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -296,10 +297,12 @@ class CircleButton(QWidget):
         if event.button() == Qt.LeftButton:
             self._pressed = True
             self._drag_start = event.globalPosition().toPoint()
-            # 找到顶层 MainWidget
             w = self.window()
             self._drag_win_origin = w.pos()
             self.update()
+            event.accept()
+        elif event.button() == Qt.RightButton:
+            self.right_clicked.emit()
             event.accept()
 
     def mouseMoveEvent(self, event):
@@ -481,6 +484,107 @@ class ChatPanel(QWidget):
 
 
 # ═══════════════════════════════════════════════════════════════════
+#  Pill Menu (右键药丸菜单)
+# ═══════════════════════════════════════════════════════════════════
+class PillMenu(QWidget):
+    PILL_MENU_W = 210
+    PILL_MENU_H = 56
+
+    def __init__(self, main_widget, parent=None):
+        super().__init__(parent)
+        self._main = main_widget
+        self._mic_active = False
+        self.setFixedSize(self.PILL_MENU_W, self.PILL_MENU_H)
+        self.setAttribute(Qt.WA_TranslucentBackground, False)
+        self.setAutoFillBackground(False)
+
+        btn_style = """
+            QPushButton {
+                background: transparent;
+                color: #ffffff;
+                border: none;
+                border-radius: 20px;
+                padding: 8px 12px;
+                font-family: "Microsoft YaHei UI";
+                font-size: 13pt;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.2); }
+            QPushButton:pressed { background: rgba(255,255,255,0.3); }
+        """
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(2)
+
+        self.mic_btn = QPushButton("🎤")
+        self.mic_btn.setFixedSize(48, 40)
+        self.mic_btn.setToolTip("开启麦克风")
+        self.mic_btn.setStyleSheet(btn_style)
+        self.mic_btn.clicked.connect(self._toggle_mic)
+
+        self.settings_btn = QPushButton("⚙")
+        self.settings_btn.setFixedSize(48, 40)
+        self.settings_btn.setToolTip("设置")
+        self.settings_btn.setStyleSheet(btn_style)
+        self.settings_btn.clicked.connect(self._open_settings)
+
+        close_btn = QPushButton("✕")
+        close_btn.setFixedSize(48, 40)
+        close_btn.setToolTip("退出程序")
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #ffffff;
+                border: none;
+                border-radius: 20px;
+                font-size: 14pt;
+                font-weight: bold;
+            }
+            QPushButton:hover { background: rgba(255,255,255,0.2); }
+            QPushButton:pressed { background: rgba(255,255,255,0.3); }
+        """)
+        close_btn.clicked.connect(self._quit_app)
+
+        layout.addWidget(self.mic_btn)
+        layout.addWidget(self.settings_btn)
+        layout.addWidget(close_btn)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor("#D97706")
+        r = self.rect()
+        # 用带同色边框的画笔消除抗锯齿白边
+        pen = QPen(color, 2)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.setBrush(color)
+        p.drawRoundedRect(r.adjusted(1, 1, -1, -1), 28, 28)
+        p.end()
+
+    def _toggle_mic(self):
+        if self._mic_active:
+            self._mic_active = False
+            self.mic_btn.setText("🎤")
+            self.mic_btn.setToolTip("开启麦克风")
+            self._main._stop_recording()
+        else:
+            self._mic_active = True
+            self.mic_btn.setText("⏹")
+            self.mic_btn.setToolTip("停止录音")
+            self._main._start_recording(pill=True)
+        self.update()
+
+    def _open_settings(self):
+        self._main._hide_pill_menu()
+        # TODO: 打开设置界面（UI 待定）
+        _log("[设置] 设置功能待开发")
+
+    def _quit_app(self):
+        QApplication.quit()
+
+
+# ═══════════════════════════════════════════════════════════════════
 #  Main Widget
 # ═══════════════════════════════════════════════════════════════════
 class MainWidget(QWidget):
@@ -501,6 +605,7 @@ class MainWidget(QWidget):
     def __init__(self):
         super().__init__()
         self._expanded = False
+        self._pill_shown = False
         self._recording = False
         self._chat_cancelled = False
         self._ai_bubble = None
@@ -511,6 +616,7 @@ class MainWidget(QWidget):
         self._stream_dirty = False
         self._greeting_shown = False
         self._last_ai_text = ""
+        self._tts_muted = False
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
         self._flush_timer.timeout.connect(self._flush_stream)
@@ -532,12 +638,18 @@ class MainWidget(QWidget):
         # 页面 0：圆形按钮
         self._circle = CircleButton()
         self._circle.clicked.connect(self._expand)
+        self._circle.right_clicked.connect(self._show_pill_menu)
         self._stack.addWidget(self._circle)
 
         # 页面 1：聊天面板
         self._panel = ChatPanel(self)
         self._panel.hide()
         self._stack.addWidget(self._panel)
+
+        # 页面 2：药丸菜单（右键弹出）
+        self._pill_menu = PillMenu(self)
+        self._pill_menu.hide()
+        self._stack.addWidget(self._pill_menu)
 
         # 截图标签（展开/收起动画用，浮在最上层）
         self._anim_label = QLabel(self)
@@ -679,6 +791,76 @@ class MainWidget(QWidget):
         if hasattr(self, '_ball_pos'):
             self.move(self._ball_pos)
 
+    # ── 药丸菜单 ────────────────────────────────────────────
+    def _show_pill_menu(self):
+        if self._pill_shown:
+            self._hide_pill_menu()
+            return
+        if self._expanded:
+            return
+        self._pill_shown = True
+
+        start_pos = self.pos()
+        self._ball_pos = start_pos
+        pw = PillMenu.PILL_MENU_W
+        ph = PillMenu.PILL_MENU_H
+        target_x = max(0, start_pos.x() + self.BUBBLE_DIA - pw)
+        target_y = start_pos.y()
+
+        # 直接调整窗口大小并显示药丸，无需截图动画
+        self.setFixedSize(pw, ph)
+        self._stack.setCurrentIndex(2)
+        self._pill_menu.show()
+
+        # 位置滑入动画
+        anim = QPropertyAnimation(self, b"pos")
+        anim.setDuration(self.ANIM_MS)
+        anim.setStartValue(start_pos)
+        anim.setEndValue(QPoint(target_x, target_y))
+        anim.setEasingCurve(QEasingCurve.OutCubic)
+        self._pill_anim = anim
+        anim.start()
+
+    def _hide_pill_menu(self):
+        if not self._pill_shown:
+            return
+        self._pill_shown = False
+
+        target_pos = getattr(self, '_ball_pos', self.pos())
+
+        # 位置滑出动画
+        anim = QPropertyAnimation(self, b"pos")
+        anim.setDuration(self.ANIM_MS)
+        anim.setEndValue(target_pos)
+        anim.setEasingCurve(QEasingCurve.InCubic)
+        self._pill_hide_anim = anim
+        anim.finished.connect(self._on_pill_hide_done)
+        anim.start()
+
+    def _on_pill_hide_done(self):
+        self._pill_menu.hide()
+        self._stack.setCurrentIndex(0)
+        self.setFixedSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        if hasattr(self, '_ball_pos'):
+            self.move(self._ball_pos)
+
+    def mousePressEvent(self, event):
+        if self._pill_shown and event.button() == Qt.LeftButton:
+            pos_in_menu = self._pill_menu.mapFromGlobal(event.globalPosition().toPoint())
+            if not self._pill_menu.rect().contains(pos_in_menu):
+                self._hide_pill_menu()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
+    def changeEvent(self, event):
+        if self._pill_shown and event.type() == event.Type.ActivationChange:
+            if not self.isActiveWindow():
+                self._hide_pill_menu()
+        super().changeEvent(event)
+
     # ── 聊天 ──────────────────────────────────────────────────
     def _on_user_message(self, text):
         self._panel.add_bubble(text, True)
@@ -818,6 +1000,8 @@ class MainWidget(QWidget):
         self._speak(self._last_ai_text)
 
     def _speak(self, text):
+        if getattr(self, '_tts_muted', False):
+            return
         clean = _strip_md(text)
         if not clean:
             return
@@ -906,12 +1090,14 @@ class MainWidget(QWidget):
         else:
             self._start_recording()
 
-    def _start_recording(self):
+    def _start_recording(self, pill=False):
         _log("[REC] 开始录音")
         self._recording = True
-        self._circle.set_recording(True)
-        self._panel.mic_btn.setText("■ 停止")
-        self._panel.status_lbl.setText("正在录音...")
+        self._rec_from_pill = pill
+        if not pill:
+            self._circle.set_recording(True)
+            self._panel.mic_btn.setText("■ 停止")
+            self._panel.status_lbl.setText("正在录音...")
 
         try:
             self._rec_chunks = []
@@ -926,10 +1112,11 @@ class MainWidget(QWidget):
 
         except Exception as e:
             _log(f"[REC] 录音失败: {e}")
-            self._panel.status_lbl.setText(f"录音失败: {e}")
+            if not pill:
+                self._panel.status_lbl.setText(f"录音失败: {e}")
+                self._circle.set_recording(False)
+                self._panel.mic_btn.setText("🎤 语音")
             self._recording = False
-            self._circle.set_recording(False)
-            self._panel.mic_btn.setText("🎤 语音")
 
     def _audio_callback(self, indata, frames, time_info, status):
         if self._recording:
@@ -940,9 +1127,11 @@ class MainWidget(QWidget):
             return
         _log("[REC] 停止录音")
         self._recording = False
-        self._circle.set_recording(False)
-        self._panel.mic_btn.setText("🎤 语音")
-        self._panel.status_lbl.setText("识别中...")
+        pill = getattr(self, '_rec_from_pill', False)
+        if not pill:
+            self._circle.set_recording(False)
+            self._panel.mic_btn.setText("🎤 语音")
+            self._panel.status_lbl.setText("识别中...")
 
         try:
             if self._rec_stream:
@@ -1018,9 +1207,20 @@ class MainWidget(QWidget):
     def _on_transcribe_done(self, text):
         self._panel.status_lbl.setText("")
         self._on_user_message(text)
+        # 药丸录音：识别完成后重置按钮（AI回复+TTS会自动触发）
+        if getattr(self, '_rec_from_pill', False):
+            self._pill_menu._mic_active = False
+            self._pill_menu.mic_btn.setText("🎤")
+            self._pill_menu.mic_btn.setToolTip("开启麦克风")
+            self._pill_menu.update()
 
     def _on_transcribe_error(self, err):
         self._panel.status_lbl.setText(f"识别失败: {err[:50]}")
+        if getattr(self, '_rec_from_pill', False):
+            self._pill_menu._mic_active = False
+            self._pill_menu.mic_btn.setText("🎤")
+            self._pill_menu.mic_btn.setToolTip("开启麦克风")
+            self._pill_menu.update()
 
 
 # ═══════════════════════════════════════════════════════════════════
