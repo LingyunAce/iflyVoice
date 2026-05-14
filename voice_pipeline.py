@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-常开麦克风语音管线：VAD → 唤醒词检测 → 语音识别 → LLM
+常开麦克风语音管线：VAD → 唤醒词检测 → 语音识别 → LLM → TTS（实时流式）
 """
-import sys, os, json, time, threading, tempfile, uuid, subprocess, http.client, collections
+import sys, os, json, time, threading, tempfile, uuid, subprocess, http.client, collections, re
 import numpy as np
 import sounddevice as sd
 
@@ -27,6 +27,54 @@ def _flog(msg):
     print(f"[Pipeline] {line}", file=sys.stderr, flush=True)
 
 
+# ── 文本清理 ─────────────────────────────────────────────────────
+def _strip_md(text):
+    """去掉 markdown 格式符号，保留纯文本内容供 TTS 朗读"""
+    if not text:
+        return text
+    s = text
+    # 代码块 ```...``` → 去掉
+    s = re.sub(r'```[\s\S]*?```', '', s)
+    # 行内代码 `...` → 保留内容
+    s = re.sub(r'`([^`]*)`', r'\1', s)
+    # 图片 ![alt](url) → alt
+    s = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', s)
+    # 链接 [text](url) → text
+    s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)
+    # 标题 # ## ### → 去掉 # 号
+    s = re.sub(r'^#{1,6}\s+', '', s, flags=re.MULTILINE)
+    # 加粗 **text** 或 __text__
+    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
+    s = re.sub(r'__(.+?)__', r'\1', s)
+    # 斜体 *text* 或 _text_
+    s = re.sub(r'\*(.+?)\*', r'\1', s)
+    s = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', s)
+    # 删除线 ~~text~~
+    s = re.sub(r'~~(.+?)~~', r'\1', s)
+    # 引用 > text
+    s = re.sub(r'^>\s?', '', s, flags=re.MULTILINE)
+    # 无序列表 - / * / +
+    s = re.sub(r'^[\s]*[-*+]\s+', '', s, flags=re.MULTILINE)
+    # 有序列表 1. 2.
+    s = re.sub(r'^[\s]*\d+\.\s+', '', s, flags=re.MULTILINE)
+    # 水平线 --- 或 *** 或 ___
+    s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
+    # 表格 | --- | --- |
+    s = re.sub(r'\|[\s\-:]+\|', '', s)
+    # 表格行 | text | text |
+    s = re.sub(r'\|', ' ', s)
+    # HTML 标签
+    s = re.sub(r'<[^>]+>', '', s)
+    # 多余空行
+    s = re.sub(r'\n{3,}', '\n\n', s)
+    # 去掉所有标点符号和特殊字符（TTS 不读）
+    s = re.sub(r'[，。！？；：、""''【】（）《》\-—…·「」『』〈〉〔〕｛｝‖｜\n]', ' ', s)
+    s = re.sub(r'[,.!?;:\'"()\[\]{}<>/\\@#$%^&*+=_~`|]', ' ', s)
+    # 多余空格
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 # ── 状态 ─────────────────────────────────────────────────────────
 class PipelineState:
     IDLE = "idle"                   # 麦克风热，VAD 监听
@@ -45,6 +93,8 @@ class VoicePipeline(QObject):
     command_captured = Signal(str)      # ASR 识别出的指令文本
     ai_response_stream = Signal(str)    # LLM 流式 token（累积全文）
     ai_response_done = Signal(str)      # LLM 最终完整回复
+    tts_start = Signal()                # TTS 开始播放
+    tts_done = Signal()                 # TTS 播放完成
     error_occurred = Signal(str)        # 错误信息
 
     def __init__(self, wake_word="小助手", server_url="http://127.0.0.1:18766",
@@ -56,6 +106,7 @@ class VoicePipeline(QObject):
         self._vad_threshold = vad_threshold
         self._wake_threshold = wake_threshold
         self._silence_timeout_ms = silence_timeout_ms
+        self._wake_listen_silence_ms = 3000  # WAKE_LISTEN 用更长的静音超时
 
         # 状态
         self._state = PipelineState.IDLE
@@ -73,12 +124,25 @@ class VoicePipeline(QObject):
         self._audio_deque = collections.deque(maxlen=100)  # ~3.2s buffer
         self._speech_buffer = bytearray()
         self._silence_frames = 0
+        self._last_wake_check_ts = 0  # 上次唤醒词检查时间戳
 
         # 线程
         self._audio_thread = None
         self._worker_thread = None
         self._running = False
         self._stream = None
+
+        # 实时 TTS 架构：双队列 + 双线程
+        self._sentence_queue = collections.deque()  # 文本队列
+        self._audio_queue = collections.deque()     # 音频队列
+        self._tts_thread = None                     # TTS 工作线程
+        self._player_thread = None                  # 音频播放线程
+        self._tts_running = False                   # TTS 线程运行标志
+        self._player_running = False                # 播放线程运行标志
+        self._current_tts_proc = None               # 当前 TTS 进程
+        self._current_ffplay_proc = None            # 当前 ffplay 播放进程
+        self._interrupted = False                   # 打断标志
+        self._tts_generation = 0                    # TTS 代次（防旧线程干扰新线程）
 
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
@@ -93,6 +157,7 @@ class VoicePipeline(QObject):
     def stop(self):
         """停止管线"""
         self._running = False
+        self._interrupt()
         self._set_state(PipelineState.IDLE)
 
     def pause(self):
@@ -108,11 +173,41 @@ class VoicePipeline(QObject):
     def notify_tts_start(self):
         """TTS 开始播放，管线静音"""
         self._set_state(PipelineState.SPEAKING)
+        self.tts_start.emit()
 
     def notify_tts_done(self):
         """TTS 播放完成，恢复监听"""
         if self._state == PipelineState.SPEAKING:
             self._set_state(PipelineState.IDLE)
+
+    # ── 打断功能 ─────────────────────────────────────────────────
+    def _interrupt(self):
+        """打断当前 TTS/LLM（非阻塞，立即返回）。不改状态，由调用方负责。"""
+        self._interrupted = True
+        # 清空队列
+        self._sentence_queue.clear()
+        self._audio_queue.clear()
+        # 停止 TTS 进程
+        if self._current_tts_proc and self._current_tts_proc.poll() is None:
+            self._current_tts_proc.terminate()
+            self._current_tts_proc = None
+        # 停止 ffplay 播放进程（Windows 需要 taskkill 确保子进程被杀）
+        if self._current_ffplay_proc and self._current_ffplay_proc.poll() is None:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(self._current_ffplay_proc.pid)],
+                    capture_output=True, timeout=3
+                )
+            except Exception:
+                try:
+                    self._current_ffplay_proc.kill()
+                except Exception:
+                    pass
+            self._current_ffplay_proc = None
+        # 设置线程退出标志（非阻塞，线程会自行退出）
+        self._tts_running = False
+        self._player_running = False
+        _flog("[打断] 已打断当前 TTS/LLM")
 
     # ── 内部方法 ─────────────────────────────────────────────────
     def _set_state(self, state):
@@ -191,8 +286,22 @@ class VoicePipeline(QObject):
         """处理单个音频块，驱动状态机"""
         state = self._state
 
-        # 暂停或 TTS 播放中：忽略音频
-        if state in (PipelineState.PAUSED, PipelineState.SPEAKING, PipelineState.PROCESSING):
+        # 暂停或处理中：忽略音频
+        if state in (PipelineState.PAUSED, PipelineState.PROCESSING):
+            return
+
+        # SPEAKING 状态：高阈值检测语音（过滤扬声器 TTS 回声）
+        if state == PipelineState.SPEAKING:
+            vad_prob = self._get_vad_prob(chunk)
+            if vad_prob >= 0.8:  # 高阈值，过滤 TTS 扬声器回声
+                _flog(f"[VAD] SPEAKING 中检测到语音 prob={vad_prob:.2f}，打断并进入指令监听")
+                # 立即打断 TTS 播放
+                self._interrupt()
+                # 打断后直接进入 COMMAND_LISTEN（不需要再检测唤醒词）
+                self._speech_buffer = bytearray()
+                self._silence_frames = 0
+                self._append_to_buffer(chunk)
+                self._set_state(PipelineState.COMMAND_LISTEN)
             return
 
         # 计算 VAD 概率
@@ -203,6 +312,7 @@ class VoicePipeline(QObject):
                 _flog(f"[VAD] 检测到语音 prob={vad_prob:.2f}")
                 self._speech_buffer = bytearray()
                 self._silence_frames = 0
+                self._last_wake_check_ts = 0
                 self._append_to_buffer(chunk)
                 self._set_state(PipelineState.WAKE_LISTEN)
 
@@ -214,21 +324,25 @@ class VoicePipeline(QObject):
             else:
                 self._silence_frames += 1
 
-            # 检查唤醒词（每 ~1秒检查一次，给 ASR 足够的音频）
-            # 使用 ASR 检测，需要至少 1 秒的音频
-            check_interval = int(self._sample_rate * 1.0 * 2)  # 1秒的 int16 数据
-            if len(self._speech_buffer) >= check_interval and len(self._speech_buffer) % check_interval < self._chunk_size * 2:
+            # 检查唤醒词（积累 ~1.5 秒音频后，每 ~500ms 检查一次）
+            min_bytes = int(self._sample_rate * 1.5 * 2)  # 1.5 秒的 int16 数据
+            now = time.time()
+            if len(self._speech_buffer) >= min_bytes and (now - self._last_wake_check_ts) >= 0.5:
+                self._last_wake_check_ts = now
                 if self._check_wake_word():
                     _flog(f"[唤醒] 唤醒词命中: {self._wake_word}")
+                    # 打断当前 TTS/LLM
+                    self._interrupt()
                     self.wake_word_detected.emit(self._wake_word)
                     # 保留已缓冲的音频（唤醒词后面的可能是指令）
                     self._silence_frames = 0
                     self._set_state(PipelineState.COMMAND_LISTEN)
                     return
 
-            # 静音超时：无唤醒词，回退到 IDLE
-            if self._silence_frames * (self._chunk_size / self._sample_rate * 1000) >= self._silence_timeout_ms:
-                _flog("[唤醒] 静音超时，无唤醒词")
+            # 静音超时：无唤醒词，回退到 IDLE（WAKE_LISTEN 用更长超时）
+            silence_ms = self._silence_frames * (self._chunk_size / self._sample_rate * 1000)
+            if silence_ms >= self._wake_listen_silence_ms:
+                _flog(f"[唤醒] 静音超时 {silence_ms:.0f}ms，无唤醒词")
                 self._speech_buffer = bytearray()
                 self._set_state(PipelineState.IDLE)
 
@@ -276,9 +390,7 @@ class VoicePipeline(QObject):
 
     def _check_wake_word(self):
         """检查缓冲音频中是否包含唤醒词（ASR 方式）"""
-        # 当音频积累到足够长度时（~1秒），用 ASR 检测唤醒词
-        min_bytes = int(self._sample_rate * 1.0 * 2)  # 1秒的 int16 数据
-        if len(self._speech_buffer) < min_bytes:
+        if len(self._speech_buffer) < self._sample_rate * 2:  # 至少 1 秒
             return False
 
         try:
@@ -315,6 +427,11 @@ class VoicePipeline(QObject):
             if wake_lower in text_lower:
                 return True
 
+            # ASR 可能漏掉"小"字，回退检查"助手"
+            if wake_lower.startswith("小") and "助手" in text_lower:
+                _flog(f"[唤醒] 回退匹配'助手'")
+                return True
+
             return False
 
         except Exception as e:
@@ -322,7 +439,7 @@ class VoicePipeline(QObject):
             return False
 
     def _process_command(self, pcm_data):
-        """Worker 线程：ASR + LLM"""
+        """Worker 线程：ASR + LLM + 实时 TTS"""
         try:
             # 1. PCM → webm
             webm_file = os.path.join(tempfile.gettempdir(), f"cmd_{uuid.uuid4().hex}.webm")
@@ -352,14 +469,322 @@ class VoicePipeline(QObject):
                 return
 
             _flog(f"[ASR] 识别结果: {text}")
+            # 去掉开头的唤醒词
+            text_lower = text.lower().strip()
+            wake_lower = self._wake_word.lower()
+            if text_lower.startswith(wake_lower):
+                text = text[len(self._wake_word):].strip()
+            elif wake_lower in text_lower:
+                idx = text_lower.index(wake_lower)
+                text = (text[:idx] + text[idx + len(self._wake_word):]).strip()
+            _flog(f"[ASR] 去掉唤醒词后: {text}")
             self.command_captured.emit(text)
 
-            # 3. LLM
-            self._chat_with_llm(text)
+            # 3. 启动实时 TTS 架构
+            self._interrupted = False
+            self._start_tts_workers()
+            self.notify_tts_start()  # 状态 → speaking + 通知 UI
+
+            # 4. LLM 流式生成 + 实时分句
+            self._stream_llm_with_tts(text)
 
         except Exception as e:
             _flog(f"[处理] 异常: {e}")
             self.error_occurred.emit(str(e))
+            self._set_state(PipelineState.IDLE)
+
+    def _start_tts_workers(self):
+        """启动 TTS 工作线程和音频播放线程"""
+        # 递增代次（旧线程看到代次不匹配会自行退出）
+        self._tts_generation += 1
+        # 清空队列
+        self._sentence_queue.clear()
+        self._audio_queue.clear()
+
+        # 启动 TTS 工作线程
+        self._tts_running = True
+        self._tts_thread = threading.Thread(target=self._tts_worker, daemon=True)
+        self._tts_thread.start()
+
+        # 启动音频播放线程
+        self._player_running = True
+        self._player_thread = threading.Thread(target=self._audio_player, daemon=True)
+        self._player_thread.start()
+
+    def _stop_tts_workers(self):
+        """停止 TTS 工作线程和音频播放线程（非阻塞）"""
+        self._tts_running = False
+        self._player_running = False
+        # 清空队列（线程会因标志退出）
+        self._sentence_queue.clear()
+        self._audio_queue.clear()
+
+    def _drain_audio_queue(self):
+        """清空音频队列中剩余的临时文件"""
+        while self._audio_queue:
+            item = self._audio_queue.popleft()
+            if item and isinstance(item, str) and os.path.exists(item):
+                try:
+                    os.unlink(item)
+                except Exception:
+                    pass
+
+    def _tts_worker(self):
+        """TTS 工作线程：从 Sentence Queue 取句子，生成音频，放入 Audio Queue"""
+        gen = self._tts_generation
+        _flog(f"[TTS Worker] 启动 gen={gen}")
+        while self._tts_running:
+            try:
+                # 从队列取句子
+                if not self._sentence_queue:
+                    time.sleep(0.05)
+                    continue
+
+                sentence = self._sentence_queue.popleft()
+                if sentence is None:  # 结束信号
+                    _flog("[TTS Worker] 收到结束信号")
+                    # 放入 None 到音频队列表示结束
+                    self._audio_queue.append(None)
+                    break
+
+                if self._interrupted:
+                    _flog("[TTS Worker] 被打断，跳过句子")
+                    continue
+
+                _flog(f"[TTS Worker] 处理句子: {sentence[:30]}...")
+                # 调用 TTS 生成音频
+                audio_data = self._generate_tts(sentence)
+                if audio_data and not self._interrupted:
+                    self._audio_queue.append(audio_data)
+                    _flog(f"[TTS Worker] 音频已放入队列: {len(audio_data)} bytes")
+
+            except Exception as e:
+                _flog(f"[TTS Worker] 异常: {e}")
+                time.sleep(0.1)
+
+        _flog("[TTS Worker] 停止")
+
+    def _audio_player(self):
+        """音频播放线程：从 Audio Queue 取音频，播放"""
+        gen = self._tts_generation  # 启动时的代次
+        _flog(f"[Audio Player] 启动 gen={gen}")
+        while self._player_running:
+            try:
+                # 打断时立即退出
+                if self._interrupted:
+                    _flog("[Audio Player] 被打断，退出")
+                    self._drain_audio_queue()
+                    break
+
+                # 状态已不是 speaking 时退出
+                if self._state != PipelineState.SPEAKING:
+                    _flog(f"[Audio Player] 状态已变为 {self._state}，退出")
+                    self._drain_audio_queue()
+                    break
+
+                # 从队列取音频
+                if not self._audio_queue:
+                    time.sleep(0.05)
+                    continue
+
+                audio_data = self._audio_queue.popleft()
+                if audio_data is None:  # 结束信号
+                    _flog("[Audio Player] 收到结束信号")
+                    break
+
+                # 再次检查打断标志（pop 后可能已被打断）
+                if self._interrupted:
+                    self._cleanup_audio_file(audio_data)
+                    self._drain_audio_queue()
+                    break
+
+                _flog(f"[Audio Player] 播放音频: {len(audio_data)} bytes")
+                finished = self._play_audio(audio_data)
+                if not finished:
+                    self._drain_audio_queue()
+                    break
+
+            except Exception as e:
+                _flog(f"[Audio Player] 异常: {e}")
+                time.sleep(0.1)
+
+        _flog(f"[Audio Player] 停止 gen={gen}")
+        # 只有当前代次才通知 UI（防止旧线程干扰新线程）
+        if gen == self._tts_generation:
+            self.tts_done.emit()
+            if not self._interrupted:
+                self._set_state(PipelineState.IDLE)
+
+    def _generate_tts(self, text):
+        """调用 TTS 生成音频，返回音频文件路径"""
+        try:
+            # 使用 edge-tts 生成音频
+            import edge_tts
+
+            mp3_file = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
+
+            # edge-tts 流式写入文件
+            async def _stream():
+                comm = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
+                with open(mp3_file, "wb") as f:
+                    async for chunk in comm.stream():
+                        if chunk["type"] == "audio" and chunk["data"]:
+                            f.write(chunk["data"])
+
+            import asyncio
+            asyncio.run(_stream())
+
+            if not os.path.exists(mp3_file) or os.path.getsize(mp3_file) == 0:
+                _flog("[TTS] 生成的音频文件为空")
+                return None
+
+            return mp3_file
+
+        except Exception as e:
+            _flog(f"[TTS] 生成异常: {e}")
+            return None
+
+    def _play_audio(self, audio_file):
+        """播放音频文件，返回 True 表示正常播完，False 表示被打断"""
+        try:
+            # 打断检查
+            if self._interrupted:
+                self._cleanup_audio_file(audio_file)
+                return False
+
+            # 使用 ffplay 播放
+            proc = subprocess.Popen(
+                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_file],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            self._current_ffplay_proc = proc
+
+            # 轮询等待进程结束，每 100ms 检查打断标志
+            while proc.poll() is None:
+                if self._interrupted:
+                    _flog("[Audio Player] 播放被中断，终止 ffplay")
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                            capture_output=True, timeout=3
+                        )
+                    except Exception:
+                        try:
+                            proc.kill()
+                        except Exception:
+                            pass
+                    self._current_ffplay_proc = None
+                    self._cleanup_audio_file(audio_file)
+                    return False
+                time.sleep(0.1)
+
+            self._current_ffplay_proc = None
+            self._cleanup_audio_file(audio_file)
+
+            if self._interrupted:
+                return False
+            return True
+
+        except Exception as e:
+            _flog(f"[Audio Player] 播放异常: {e}")
+            return False
+
+    def _cleanup_audio_file(self, path):
+        try:
+            if path and os.path.exists(path):
+                os.unlink(path)
+        except Exception:
+            pass
+
+    def _stream_llm_with_tts(self, text):
+        """流式请求 LLM，边生成边分句到 TTS"""
+        try:
+            # 预检
+            try:
+                pre = Request(f"{self._server_url}/ollama/api/tags",
+                              headers={"Content-Type": "application/json"})
+                urlopen(pre, timeout=3).close()
+            except Exception as e:
+                _flog(f"[LLM] 预检失败: {e}")
+                self.error_occurred.emit(f"AI 服务不可达: {e}")
+                self._stop_tts_workers()
+                self._set_state(PipelineState.IDLE)
+                return
+
+            payload = json.dumps({
+                "model": "qwen3-vl:4b",
+                "messages": [{"role": "user", "content": text}],
+                "stream": True
+            }).encode()
+
+            req = Request(f"{self._server_url}/ollama/api/chat",
+                          data=payload,
+                          headers={"Content-Type": "application/json"},
+                          method="POST")
+            resp = urlopen(req, timeout=90)
+
+            full = ""
+            buf = b""
+            token_count = 0
+            sentence_buffer = ""
+            sentence_end_chars = set("。！？；\n.!?;")
+
+            while not self._interrupted:
+                chunk = resp.read(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                while b"\n" in buf:
+                    line_bytes, buf = buf.split(b"\n", 1)
+                    line = line_bytes.decode("utf-8", errors="replace").strip()
+                    if not line or line == "done":
+                        continue
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    try:
+                        obj = json.loads(line)
+                        token = (obj.get("message", {}) or {}).get("content", "") or obj.get("content", "")
+                        if token:
+                            full += token
+                            sentence_buffer += token
+                            token_count += 1
+
+                            # 每 5 个 token emit 一次流式更新
+                            if token_count % 5 == 0 or token_count == 1:
+                                self.ai_response_stream.emit(full)
+
+                            # 检查是否句子结束
+                            if token and token[-1] in sentence_end_chars:
+                                sentence = sentence_buffer.strip()
+                                if sentence:
+                                    # 清理标点符号
+                                    clean_sentence = _strip_md(sentence)
+                                    if clean_sentence:
+                                        _flog(f"[LLM] 句子完成: {clean_sentence[:30]}...")
+                                        self._sentence_queue.append(clean_sentence)
+                                    sentence_buffer = ""
+
+                    except json.JSONDecodeError:
+                        continue
+
+            resp.close()
+
+            # 处理剩余的句子缓冲
+            if sentence_buffer.strip() and not self._interrupted:
+                clean_sentence = _strip_md(sentence_buffer.strip())
+                if clean_sentence:
+                    self._sentence_queue.append(clean_sentence)
+
+            # 发送结束信号到 TTS 线程
+            self._sentence_queue.append(None)
+
+            _flog(f"[LLM] 完成 tokens={token_count} len={len(full)}")
+            self.ai_response_done.emit(full)
+
+        except Exception as e:
+            _flog(f"[LLM] 错误: {e}")
+            self.error_occurred.emit(str(e))
+            self._stop_tts_workers()
             self._set_state(PipelineState.IDLE)
 
     def _transcribe(self, webm_file):
@@ -398,64 +823,3 @@ class VoicePipeline(QObject):
         except Exception as e:
             _flog(f"[ASR] 请求异常: {e}")
             return ""
-
-    def _chat_with_llm(self, text):
-        """流式请求 LLM，发射信号"""
-        try:
-            # 预检
-            try:
-                pre = Request(f"{self._server_url}/ollama/api/tags",
-                              headers={"Content-Type": "application/json"})
-                urlopen(pre, timeout=3).close()
-            except Exception as e:
-                _flog(f"[LLM] 预检失败: {e}")
-                self.error_occurred.emit(f"AI 服务不可达: {e}")
-                self._set_state(PipelineState.IDLE)
-                return
-
-            payload = json.dumps({
-                "model": "qwen3-vl:4b",
-                "messages": [{"role": "user", "content": text}],
-                "stream": True
-            }).encode()
-
-            req = Request(f"{self._server_url}/ollama/api/chat",
-                          data=payload,
-                          headers={"Content-Type": "application/json"},
-                          method="POST")
-            resp = urlopen(req, timeout=90)
-
-            full = ""
-            buf = b""
-            token_count = 0
-            while True:
-                chunk = resp.read(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                while b"\n" in buf:
-                    line_bytes, buf = buf.split(b"\n", 1)
-                    line = line_bytes.decode("utf-8", errors="replace").strip()
-                    if not line or line == "done":
-                        continue
-                    if line.startswith("data:"):
-                        line = line[5:].strip()
-                    try:
-                        obj = json.loads(line)
-                        token = (obj.get("message", {}) or {}).get("content", "") or obj.get("content", "")
-                        if token:
-                            full += token
-                            token_count += 1
-                            if token_count % 5 == 0 or token_count == 1:
-                                self.ai_response_stream.emit(full)
-                    except json.JSONDecodeError:
-                        continue
-
-            resp.close()
-            _flog(f"[LLM] 完成 tokens={token_count} len={len(full)}")
-            self.ai_response_done.emit(full)
-
-        except Exception as e:
-            _flog(f"[LLM] 错误: {e}")
-            self.error_occurred.emit(str(e))
-            self._set_state(PipelineState.IDLE)

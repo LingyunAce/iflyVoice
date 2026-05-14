@@ -83,7 +83,12 @@ def _strip_md(text):
     s = re.sub(r'<[^>]+>', '', s)
     # 多余空行压缩
     s = re.sub(r'\n{3,}', '\n\n', s)
-    return s.strip()
+    # 去掉所有标点符号和特殊字符（TTS 不读）
+    s = re.sub(r'[，。！？；：、""''【】（）《》\-—…·「」『』〈〉〔〕｛｝‖｜\n]', ' ', s)
+    s = re.sub(r'[,.!?;:\'"()\[\]{}<>/\\@#$%^&*+=_~`|]', ' ', s)
+    # 多余空格
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -501,7 +506,7 @@ class ChatPanel(QWidget):
         row2.setSpacing(6)
         self.tts_btn = QPushButton("🔊 朗读")
         self.tts_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self.tts_btn.clicked.connect(lambda: self._main._speak_last())
+        self.tts_btn.clicked.connect(self._on_tts_btn_click)
         row2.addWidget(self.tts_btn, 1)
 
         il.addLayout(row1)
@@ -515,6 +520,15 @@ class ChatPanel(QWidget):
             return
         self.input_box.clear()
         self._main._on_user_message(text)
+
+    def _on_tts_btn_click(self):
+        if self._main._tts_playing:
+            # 立即更新按钮状态
+            self._main._tts_playing = False
+            self._main._set_tts_btn_playing(False)
+            self._main._stop_tts()
+        else:
+            self._main._speak_last()
 
     def add_bubble(self, text, is_user):
         b = ChatBubble(text, is_user, self.msg_container)
@@ -667,8 +681,6 @@ class MainWidget(QWidget):
     sig_done = Signal(str)
     sig_error = Signal(str)
     sig_status = Signal(str)      # 跨线程更新状态文字
-    sig_tts_play = Signal(str)
-    sig_tts_done = Signal()
 
     def __init__(self, pipeline=None):
         super().__init__()
@@ -681,6 +693,7 @@ class MainWidget(QWidget):
         self._greeting_shown = False
         self._last_ai_text = ""
         self._tts_muted = False
+        self._tts_playing = False   # TTS 是否正在播放
         self._pipeline = pipeline
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
@@ -730,7 +743,6 @@ class MainWidget(QWidget):
         self.sig_done.connect(self._on_ai_done)
         self.sig_error.connect(self._on_ai_error)
         self.sig_status.connect(lambda s: self._panel.status_lbl.setText(s))
-        self.sig_tts_done.connect(self._on_tts_done)
 
         # 连接管线信号
         if self._pipeline:
@@ -739,6 +751,8 @@ class MainWidget(QWidget):
             self._pipeline.command_captured.connect(self._on_pipeline_command)
             self._pipeline.ai_response_stream.connect(self._on_stream_token)
             self._pipeline.ai_response_done.connect(self._on_ai_done)
+            self._pipeline.tts_start.connect(self._on_tts_start)
+            self._pipeline.tts_done.connect(self._on_tts_done)
             self._pipeline.error_occurred.connect(self._on_pipeline_error)
 
         # 初始：只显示圆形
@@ -1059,10 +1073,6 @@ class MainWidget(QWidget):
         _flog(f"[DONE] 完成")
         if full:
             self._last_ai_text = full
-            # 通知管线 TTS 开始
-            if self._pipeline:
-                self._pipeline.notify_tts_start()
-            self._speak(full)
 
     def _on_ai_error(self, err):
         self._wait_timer.stop()
@@ -1071,97 +1081,27 @@ class MainWidget(QWidget):
         self._panel.add_bubble(f"[错误] {err}", False)
 
     def _speak_last(self):
+        """重新朗读上次的AI回复（通过管线）"""
         if not self._last_ai_text:
             self._panel.status_lbl.setText("没有可朗读的内容")
             return
-        self._speak(self._last_ai_text)
-
-    def _speak(self, text):
-        if getattr(self, '_tts_muted', False):
-            return
-        clean = _strip_md(text)
-        if not clean:
-            return
-        _flog(f"[TTS] 开始朗读 len={len(clean)}")
-        # 杀掉之前的播放进程，不调用 _on_tts_done
-        for attr in ('_tts_proc', '_tts_ffmpeg'):
-            proc = getattr(self, attr, None)
-            if proc and proc.poll() is None:
-                proc.terminate()
-            setattr(self, attr, None)
-        self._panel.tts_btn.setText("⏹ 停止")
-        try:
-            self._panel.tts_btn.clicked.disconnect()
-        except:
-            pass
-        self._panel.tts_btn.clicked.connect(self._stop_speak)
-        threading.Thread(target=self._do_speak, args=(clean,), daemon=True).start()
-
-    def _stop_speak(self):
-        _flog("[TTS] 停止朗读")
-        for attr in ('_tts_proc', '_tts_ffmpeg'):
-            proc = getattr(self, attr, None)
-            if proc and proc.poll() is None:
-                proc.terminate()
-            setattr(self, attr, None)
-        self._on_tts_done()
-
-    def _do_speak(self, text):
-        """edge-tts 流式写入临时文件 → ffplay 播放"""
-        try:
-            import edge_tts
-
-            _flog(f"[TTS] 流式生成...")
-            mp3 = os.path.join(tempfile.gettempdir(), f"tts_{uuid.uuid4().hex}.mp3")
-
-            # edge-tts 流式写入文件（比 .save() 更快开始写入）
-            async def _stream():
-                comm = edge_tts.Communicate(text, "zh-CN-XiaoxiaoNeural")
-                with open(mp3, "wb") as f:
-                    async for chunk in comm.stream():
-                        if chunk["type"] == "audio" and chunk["data"]:
-                            f.write(chunk["data"])
-
-            asyncio.run(_stream())
-
-            if not os.path.exists(mp3) or os.path.getsize(mp3) == 0:
-                _flog("[TTS] 生成的音频文件为空")
-                self.sig_tts_done.emit()
-                return
-
-            _flog(f"[TTS] 音频就绪 {os.path.getsize(mp3)} bytes，开始播放")
-            self._tts_proc = subprocess.Popen(
-                ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", mp3],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            self._tts_proc.wait()
-            _flog(f"[TTS] 播放完成")
-
-            try:
-                os.unlink(mp3)
-            except Exception:
-                pass
-            self._tts_proc = None
-            self.sig_tts_done.emit()
-
-        except FileNotFoundError:
-            _flog("[TTS] 错误: ffplay 未安装")
-            self.sig_tts_done.emit()
-        except Exception as e:
-            _flog(f"[TTS] 错误: {e}")
-            self.sig_tts_done.emit()
-
-    def _on_tts_done(self):
-        self._tts_proc = None
-        self._panel.tts_btn.setText("🔊 朗读")
-        try:
-            self._panel.tts_btn.clicked.disconnect()
-        except:
-            pass
-        self._panel.tts_btn.clicked.connect(lambda: self._speak_last())
-        # 通知管线 TTS 结束
         if self._pipeline:
-            self._pipeline.notify_tts_done()
+            # 清理文本：去掉 markdown 和标点符号
+            clean = _strip_md(self._last_ai_text)
+            if not clean:
+                self._panel.status_lbl.setText("没有可朗读的内容")
+                return
+            self._pipeline._interrupted = False
+            self._pipeline._start_tts_workers()
+            self._pipeline._sentence_queue.append(clean)
+            self._pipeline._sentence_queue.append(None)  # 结束信号
+            self._pipeline.notify_tts_start()
+
+    def _stop_tts(self):
+        """停止当前 TTS 播放"""
+        if self._pipeline:
+            self._pipeline._interrupt()
+            self._pipeline._set_state("idle")
 
     # ── 管线状态处理 ──────────────────────────────────────────
     def _on_pipeline_state(self, state):
@@ -1177,6 +1117,9 @@ class MainWidget(QWidget):
             "paused": "已暂停",
         }
         self._panel.status_lbl.setText(state_text.get(state, ""))
+        # TTS 播放期间不更新按钮状态（由 _tts_playing 控制）
+        if not self._tts_playing:
+            self._set_tts_btn_playing(state == "speaking")
 
     def _on_wake_word(self, word):
         """唤醒词检测到，自动展开面板"""
@@ -1192,6 +1135,27 @@ class MainWidget(QWidget):
         """管线错误"""
         _flog(f"[管线] 错误: {err}")
         self._panel.status_lbl.setText(f"错误: {err[:50]}")
+
+    def _on_tts_start(self):
+        """TTS 开始播放"""
+        self._tts_playing = True
+        self._set_tts_btn_playing(True)
+
+    def _on_tts_done(self):
+        """TTS 播放完成"""
+        self._tts_playing = False
+        self._set_tts_btn_playing(False)
+
+    def _set_tts_btn_playing(self, playing):
+        if playing:
+            self._panel.tts_btn.setText("⏹ 停止朗读")
+            self._panel.tts_btn.setStyleSheet(
+                "background:#ef4444; color:white; border:none; border-radius:8px;"
+                "padding:6px 12px; font-family:\"Microsoft YaHei UI\";"
+            )
+        else:
+            self._panel.tts_btn.setText("🔊 朗读")
+            self._panel.tts_btn.setStyleSheet("")
 
 
 # ═══════════════════════════════════════════════════════════════════
