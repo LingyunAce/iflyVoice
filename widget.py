@@ -729,8 +729,8 @@ class SettingsDialog(QWidget):
         default = {
             "mic_device": "",
             "mute_tts": False,
-            "audio_url": SERVER_URL,
-            "ollama_url": SERVER_URL,
+            "audio_url": "http://192.168.1.32:9997",
+            "ollama_url": "http://192.168.1.32:11434",
             "ollama_model": "qwen3-vl:4b",
         }
         try:
@@ -885,9 +885,9 @@ class SettingsDialog(QWidget):
     def _refresh_model_list(self):
         """从 Ollama 服务器获取可用模型列表"""
         self._ollama_model_combo.clear()
-        url = self._ollama_url_edit.text().strip() or SERVER_URL
+        url = self._ollama_url_edit.text().strip() or "http://192.168.1.32:11434"
         try:
-            resp = urlopen(f"{url}/ollama/api/tags", timeout=3)
+            resp = urlopen(f"{url}/api/tags", timeout=3)
             data = json.loads(resp.read().decode("utf-8"))
             models = data.get("models", [])
             for m in models:
