@@ -1225,10 +1225,33 @@ class MainWidget(QWidget):
     def _show_settings(self):
         """显示设置对话框"""
         dlg = self._settings_dialog
-        # 居中显示在屏幕中央
-        screen = QApplication.primaryScreen().geometry()
-        x = screen.x() + (screen.width() - dlg.width()) // 2
-        y = screen.y() + (screen.height() - dlg.height()) // 2
+        # 获取悬浮球位置和尺寸
+        ball_pos = self._circle.mapToGlobal(QPoint(0, 0))
+        ball_rect = self._circle.geometry()
+        ball_cx = ball_pos.x() + ball_rect.width() // 2
+        ball_top = ball_pos.y()
+        ball_bottom = ball_pos.y() + ball_rect.height()
+
+        # 屏幕几何信息
+        screen = QApplication.primaryScreen().availableGeometry()
+
+        # 设置对话框位置：优先显示在悬浮球上方
+        dlg_w = dlg.width()
+        dlg_h = dlg.height()
+        x = ball_cx - dlg_w // 2
+
+        # 检查上方空间是否足够
+        space_above = ball_top - screen.top()
+        if space_above >= dlg_h + 10:
+            y = ball_top - dlg_h - 10
+        else:
+            # 上方不够，显示在下方
+            y = ball_bottom + 10
+
+        # 确保不超出屏幕边界
+        x = max(screen.left(), min(x, screen.right() - dlg_w))
+        y = max(screen.top(), min(y, screen.bottom() - dlg_h))
+
         dlg.move(x, y)
         dlg.show()
         dlg.raise_()
