@@ -216,6 +216,9 @@ class VoicePipeline(QObject):
         self._current_ffplay_proc = None            # 当前 ffplay 播放进程
         self._interrupted = False                   # 打断标志
         self._tts_generation = 0                    # TTS 代次（防旧线程干扰新线程）
+        self._tts_muted = False                     # 禁止自动朗读
+        self._mic_device = None                     # 麦克风设备（None=默认）
+        self._model = "qwen3-vl:4b"                # LLM 模型名称
 
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
@@ -314,11 +317,13 @@ class VoicePipeline(QObject):
         self._set_state(PipelineState.IDLE)
 
         try:
+            mic_dev = int(self._mic_device) if self._mic_device else None
             self._stream = sd.InputStream(
                 samplerate=self._sample_rate,
                 channels=1,
                 dtype='int16',
                 blocksize=self._chunk_size,
+                device=mic_dev,
                 callback=self._audio_callback,
             )
             self._stream.start()
@@ -563,20 +568,24 @@ class VoicePipeline(QObject):
                 reply = self._execute_display_control(intent)
                 self.ai_response_stream.emit(reply)
                 self.ai_response_done.emit(reply)
-                # TTS 播放回复
-                self._interrupted = False
-                self._start_tts_workers()
-                self.notify_tts_start()
-                clean = _strip_md(reply)
-                if clean:
-                    self._sentence_queue.append(clean)
-                self._sentence_queue.append(None)
+                # TTS 播放回复（检查是否静音）
+                if not self._tts_muted:
+                    self._interrupted = False
+                    self.notify_tts_start()
+                    self._start_tts_workers()
+                    clean = _strip_md(reply)
+                    if clean:
+                        self._sentence_queue.append(clean)
+                    self._sentence_queue.append(None)
+                else:
+                    self._set_state(PipelineState.IDLE)
                 return
 
             # 4. 启动实时 TTS 架构
-            self._interrupted = False
-            self._start_tts_workers()
-            self.notify_tts_start()  # 状态 → speaking + 通知 UI
+            if not self._tts_muted:
+                self._interrupted = False
+                self.notify_tts_start()
+                self._start_tts_workers()  # 状态 → speaking + 通知 UI
 
             # 5. LLM 流式生成 + 实时分句
             self._stream_llm_with_tts(text)
@@ -689,7 +698,7 @@ class VoicePipeline(QObject):
                 f"用户：{text}"
             )
             payload = json.dumps({
-                "model": "qwen3-vl:4b",
+                "model": self._model,
                 "messages": [{"role": "user", "content": prompt}],
                 "stream": False
             }).encode()
@@ -943,7 +952,7 @@ class VoicePipeline(QObject):
                 return
 
             payload = json.dumps({
-                "model": "qwen3-vl:4b",
+                "model": self._model,
                 "messages": [{"role": "user", "content": text}],
                 "stream": True
             }).encode()

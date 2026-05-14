@@ -1,0 +1,7 @@
+{
+  "mic_device": "",
+  "mute_tts": false,
+  "audio_url": "http://127.0.0.1:18766",
+  "ollama_url": "http://127.0.0.1:18766",
+  "ollama_model": "qwen3-vl:4b"
+}

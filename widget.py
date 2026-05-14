@@ -13,7 +13,7 @@ from urllib.error import HTTPError
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QScrollArea
 from PySide6.QtWidgets import QSizePolicy, QStackedWidget, QTextEdit, QFrame
-from PySide6.QtWidgets import QGraphicsOpacityEffect
+from PySide6.QtWidgets import QGraphicsOpacityEffect, QComboBox, QCheckBox
 from PySide6.QtCore import (Qt, QPropertyAnimation, QParallelAnimationGroup,
                              QUrl, QSize, Property, QEasingCurve, QTimer,
                              QSequentialAnimationGroup, QPoint, QRectF, QRect, Signal,
@@ -700,11 +700,266 @@ class PillMenu(QWidget):
 
     def _open_settings(self):
         self._main._hide_pill_menu()
-        # TODO: 打开设置界面（UI 待定）
-        _log("[设置] 设置功能待开发")
+        self._main._show_settings()
 
     def _quit_app(self):
         QApplication.quit()
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  Settings Dialog
+# ═══════════════════════════════════════════════════════════════════
+class SettingsDialog(QWidget):
+    def __init__(self, main_widget, parent=None):
+        super().__init__(parent)
+        self._main = main_widget
+        self.setWindowTitle("设置")
+        self.setFixedSize(360, 350)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+
+        # 配置文件路径
+        self._config_file = os.path.join(os.path.dirname(__file__), "settings.json")
+        self._config = self._load_config()
+
+        self._init_ui()
+        self._apply_config()
+
+    def _load_config(self):
+        default = {
+            "mic_device": "",
+            "mute_tts": False,
+            "audio_url": SERVER_URL,
+            "ollama_url": SERVER_URL,
+            "ollama_model": "qwen3-vl:4b",
+        }
+        try:
+            if os.path.exists(self._config_file):
+                with open(self._config_file, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                for k, v in default.items():
+                    if k not in cfg:
+                        cfg[k] = v
+                return cfg
+        except Exception:
+            pass
+        return default
+
+    def _save_config(self):
+        try:
+            with open(self._config_file, "w", encoding="utf-8") as f:
+                json.dump(self._config, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            _log(f"[设置] 保存失败: {e}")
+
+    def _init_ui(self):
+        # 外层容器（带圆角背景）
+        container = QWidget(self)
+        container.setGeometry(0, 0, self.width(), self.height())
+        container.setStyleSheet("""
+            QWidget {
+                background: #2b3441;
+                border: 1px solid #3a4555;
+                border-radius: 10px;
+            }
+            QLabel { color: #e0e0e0; background: transparent; border: none; font-family: "Microsoft YaHei UI"; }
+            QComboBox {
+                background: #1a2029; color: white; border: 1px solid #3a4555;
+                border-radius: 6px; padding: 5px 8px; font-family: "Microsoft YaHei UI";
+            }
+            QComboBox:focus { border: 1px solid #4ECDC4; }
+            QComboBox QAbstractItemView { background: #1a2029; color: white; selection-background-color: #4ECDC4; }
+            QLineEdit {
+                background: #1a2029; color: white; border: 1px solid #3a4555;
+                border-radius: 6px; padding: 5px 8px; font-family: "Microsoft YaHei UI";
+            }
+            QLineEdit:focus { border: 1px solid #4ECDC4; }
+            QCheckBox { color: #e0e0e0; background: transparent; border: none; font-family: "Microsoft YaHei UI"; }
+            QCheckBox::indicator { width: 16px; height: 16px; }
+            QPushButton {
+                background: #4ECDC4; color: white; border: none;
+                border-radius: 6px; padding: 6px 16px; font-family: "Microsoft YaHei UI";
+            }
+            QPushButton:hover { background: #5fd9d2; }
+            QPushButton:pressed { background: #3dbdb5; }
+        """)
+
+        ml = QVBoxLayout(container)
+        ml.setContentsMargins(16, 16, 16, 16)
+        ml.setSpacing(10)
+
+        # 标题栏
+        header = QHBoxLayout()
+        title = QLabel("设置")
+        title.setFont(QFont("Microsoft YaHei UI", 11, QFont.Bold))
+        spacer = QWidget()
+        spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        spacer.setAttribute(Qt.WA_TranslucentBackground)
+        close_btn = QPushButton()
+        close_btn.setFixedSize(22, 22)
+        # 绘制白色 X 图标
+        x_icon = QPixmap(12, 12)
+        x_icon.fill(Qt.transparent)
+        _p = QPainter(x_icon)
+        _p.setRenderHint(QPainter.Antialiasing)
+        _p.setPen(QPen(QColor("white"), 2))
+        _p.drawLine(2, 2, 10, 10)
+        _p.drawLine(10, 2, 2, 10)
+        _p.end()
+        close_btn.setIcon(QIcon(x_icon))
+        close_btn.setIconSize(QSize(12, 12))
+        close_btn.setStyleSheet("""
+            QPushButton {
+                background: #D97706; border: none;
+                border-radius: 11px;
+            }
+            QPushButton:hover { background: #e88a1a; }
+            QPushButton:pressed { background: #c06a06; }
+        """)
+        close_btn.clicked.connect(self.hide)
+        header.addWidget(title)
+        header.addWidget(spacer)
+        header.addWidget(close_btn)
+        ml.addLayout(header)
+
+        # 1. 麦克风选择
+        ml.addWidget(QLabel("麦克风设备"))
+        self._mic_combo = QComboBox()
+        self._mic_combo.setMinimumWidth(280)
+        self._mic_combo.setFixedHeight(26)
+        self._refresh_mic_list()
+        ml.addWidget(self._mic_combo)
+
+        # 2. 禁止自动朗读
+        self._mute_cb = QCheckBox("禁止自动朗读（TTS）")
+        ml.addWidget(self._mute_cb)
+
+        # 3. Audio 服务 URL
+        ml.addWidget(QLabel("Audio 服务 URL"))
+        self._audio_url_edit = QLineEdit()
+        self._audio_url_edit.setFixedHeight(26)
+        ml.addWidget(self._audio_url_edit)
+
+        # 4. Ollama URL + 模型下拉
+        ml.addWidget(QLabel("Ollama 服务 URL"))
+        self._ollama_url_edit = QLineEdit()
+        self._ollama_url_edit.setFixedHeight(26)
+        self._ollama_url_edit.editingFinished.connect(self._refresh_model_list)
+        ml.addWidget(self._ollama_url_edit)
+
+        ml.addWidget(QLabel("模型名称"))
+        self._ollama_model_combo = QComboBox()
+        self._ollama_model_combo.setMinimumWidth(280)
+        self._ollama_model_combo.setFixedHeight(26)
+        ml.addWidget(self._ollama_model_combo)
+
+        # 保存按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        save_btn = QPushButton("保存")
+        save_btn.setFixedHeight(25)
+        save_btn.setStyleSheet("""
+            QPushButton {
+                background: #D97706; color: white; border: none;
+                border-radius: 6px; padding: 6px 16px;
+            }
+            QPushButton:hover { background: #e88a1a; }
+            QPushButton:pressed { background: #c06a06; }
+        """)
+        save_btn.clicked.connect(self._on_save)
+        btn_row.addWidget(save_btn)
+        ml.addLayout(btn_row)
+
+    def _refresh_mic_list(self):
+        self._mic_combo.clear()
+        self._mic_combo.addItem("默认麦克风", "")
+        try:
+            devices = sd.query_devices()
+            for i, d in enumerate(devices):
+                if d["max_input_channels"] > 0:
+                    name = d["name"]
+                    self._mic_combo.addItem(f"{name}", str(i))
+        except Exception as e:
+            _log(f"[设置] 枚举麦克风失败: {e}")
+
+    def _refresh_model_list(self):
+        """从 Ollama 服务器获取可用模型列表"""
+        self._ollama_model_combo.clear()
+        url = self._ollama_url_edit.text().strip() or SERVER_URL
+        try:
+            resp = urlopen(f"{url}/ollama/api/tags", timeout=3)
+            data = json.loads(resp.read().decode("utf-8"))
+            models = data.get("models", [])
+            for m in models:
+                name = m.get("name", "")
+                if name:
+                    self._ollama_model_combo.addItem(name)
+        except Exception as e:
+            _log(f"[设置] 获取模型列表失败: {e}")
+            # 回退：至少显示配置中的模型
+            saved = self._config.get("ollama_model", "qwen3-vl:4b")
+            self._ollama_model_combo.addItem(saved)
+
+    def _apply_config(self):
+        # 麦克风
+        mic = self._config.get("mic_device", "")
+        idx = self._mic_combo.findData(mic)
+        if idx >= 0:
+            self._mic_combo.setCurrentIndex(idx)
+        # 静音
+        self._mute_cb.setChecked(self._config.get("mute_tts", False))
+        # URL
+        self._audio_url_edit.setText(self._config.get("audio_url", SERVER_URL))
+        self._ollama_url_edit.setText(self._config.get("ollama_url", SERVER_URL))
+        # 模型列表
+        self._refresh_model_list()
+        saved_model = self._config.get("ollama_model", "qwen3-vl:4b")
+        idx = self._ollama_model_combo.findText(saved_model)
+        if idx >= 0:
+            self._ollama_model_combo.setCurrentIndex(idx)
+
+    def _on_save(self):
+        self._config["mic_device"] = self._mic_combo.currentData() or ""
+        self._config["mute_tts"] = self._mute_cb.isChecked()
+        self._config["audio_url"] = self._audio_url_edit.text().strip() or SERVER_URL
+        self._config["ollama_url"] = self._ollama_url_edit.text().strip() or SERVER_URL
+        self._config["ollama_model"] = self._ollama_model_combo.currentText() or "qwen3-vl:4b"
+        self._save_config()
+        self._apply_to_main()
+        self.hide()
+
+    def _apply_to_main(self):
+        """将配置应用到 MainWidget 和 Pipeline"""
+        # TTS 静音
+        self._main._tts_muted = self._config.get("mute_tts", False)
+        # Pipeline 麦克风设备 + 模型
+        if self._main._pipeline:
+            self._main._pipeline._mic_device = self._config.get("mic_device", None)
+            self._main._pipeline._model = self._config.get("ollama_model", "qwen3-vl:4b")
+        _log(f"[设置] 已应用: {self._config}")
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor("#2b3441"))
+        p.setPen(QPen(QColor("#3a4555"), 1))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 10, 10)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = True
+            self._drag_start = event.globalPosition().toPoint()
+            self._drag_win_origin = self.pos()
+
+    def mouseMoveEvent(self, event):
+        if hasattr(self, '_dragging') and self._dragging:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            self.move(self._drag_win_origin + delta)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._dragging = False
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -734,6 +989,10 @@ class MainWidget(QWidget):
         self._tts_muted = False
         self._tts_playing = False   # TTS 是否正在播放
         self._pipeline = pipeline
+
+        # 设置对话框
+        self._settings_dialog = SettingsDialog(self)
+
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
         self._flush_timer.timeout.connect(self._flush_stream)
@@ -953,6 +1212,18 @@ class MainWidget(QWidget):
         anim.setEasingCurve(QEasingCurve.OutCubic)
         self._pill_anim = anim
         anim.start()
+
+    def _show_settings(self):
+        """显示设置对话框"""
+        dlg = self._settings_dialog
+        # 居中显示在屏幕中央
+        screen = QApplication.primaryScreen().geometry()
+        x = screen.x() + (screen.width() - dlg.width()) // 2
+        y = screen.y() + (screen.height() - dlg.height()) // 2
+        dlg.move(x, y)
+        dlg.show()
+        dlg.raise_()
+        dlg.activateWindow()
 
     def _hide_pill_menu(self):
         if not self._pill_shown:
