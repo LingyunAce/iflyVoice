@@ -703,6 +703,15 @@ class PillMenu(QWidget):
         self._main._show_settings()
 
     def _quit_app(self):
+        # 停止管线（会终止 TTS 和 ffplay 进程）
+        if self._main._pipeline:
+            self._main._pipeline.stop()
+        # 杀掉所有残留的 ffplay 进程
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
+                           capture_output=True, timeout=3)
+        except Exception:
+            pass
         QApplication.quit()
 
 
@@ -1351,6 +1360,9 @@ class MainWidget(QWidget):
 
     def _do_chat(self, text):
         _log(f"[CHAT] 开始请求")
+        tts_started = False
+        sentence_buffer = ""
+        sentence_end_chars = set("。！？；\n.!?;")
         try:
             # 1. 预检：快速检测 ollama 是否可达（3 秒超时，快速失败）
             try:
@@ -1366,8 +1378,9 @@ class MainWidget(QWidget):
             self.sig_status.emit("模型加载中...")
 
             # 2. 正式请求：使用 urllib（比 http.client 对 GIL 更友好）
+            model = self._pipeline._model if self._pipeline else "qwen3-vl:4b"
             payload = json.dumps({
-                "model": "qwen3-vl:4b",
+                "model": model,
                 "messages": [{"role": "user", "content": text}],
                 "stream": True
             }).encode()
@@ -1399,16 +1412,45 @@ class MainWidget(QWidget):
                         token = (obj.get("message", {}) or {}).get("content", "") or obj.get("content", "")
                         if token:
                             full += token
+                            sentence_buffer += token
                             token_count += 1
                             if token_count % 20 == 0:
                                 _flog(f"[CHAT] tokens={token_count} len={len(full)}")
                             # 每 5 个 token emit 一次，减少主线程信号队列压力
                             if token_count % 5 == 0 or token_count == 1:
                                 self.sig_stream.emit(full)
+
+                            # 流式 TTS：首 token 启动 TTS，句子完成时送入队列
+                            if not self._tts_muted and self._pipeline:
+                                if not tts_started:
+                                    tts_started = True
+                                    self._pipeline._interrupted = False
+                                    self._pipeline.notify_tts_start()
+                                    self._pipeline._start_tts_workers()
+                                # 检查句子是否完成
+                                if token and token[-1] in sentence_end_chars:
+                                    sentence = sentence_buffer.strip()
+                                    if sentence:
+                                        clean = _strip_md(sentence)
+                                        if clean:
+                                            _flog(f"[CHAT] 句子完成: {clean[:30]}...")
+                                            self._pipeline._sentence_queue.append(clean)
+                                        sentence_buffer = ""
                     except json.JSONDecodeError:
                         continue
 
             resp.close()
+
+            # 处理剩余的句子缓冲
+            if sentence_buffer.strip() and not self._chat_cancelled and tts_started:
+                clean = _strip_md(sentence_buffer.strip())
+                if clean:
+                    self._pipeline._sentence_queue.append(clean)
+
+            # 发送结束信号到 TTS
+            if tts_started and self._pipeline:
+                self._pipeline._sentence_queue.append(None)
+
             if self._chat_cancelled:
                 _log(f"[CHAT] 已取消")
                 self.sig_error.emit("已取消")
@@ -1475,10 +1517,10 @@ class MainWidget(QWidget):
                 self._panel.status_lbl.setText("没有可朗读的内容")
                 return
             self._pipeline._interrupted = False
+            self._pipeline.notify_tts_start()
             self._pipeline._start_tts_workers()
             self._pipeline._sentence_queue.append(clean)
             self._pipeline._sentence_queue.append(None)  # 结束信号
-            self._pipeline.notify_tts_start()
 
     def _stop_tts(self):
         """停止当前 TTS 播放"""
@@ -1576,6 +1618,15 @@ def main():
     # 启动管线
     pipeline.start()
 
+    def _cleanup():
+        pipeline.stop()
+        try:
+            subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
+                           capture_output=True, timeout=3)
+        except Exception:
+            pass
+
+    app.aboutToQuit.connect(_cleanup)
     app.aboutToQuit.connect(w.close)
     sys.exit(app.exec())
 
