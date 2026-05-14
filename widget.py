@@ -407,22 +407,26 @@ class ChatPanel(QWidget):
             ChatPanel {
                 background: #2b3441;
                 border: 1px solid #3a4555;
-                border-radius: 18px;
+                border-radius: 10px;
             }
             QScrollArea { background:transparent; border:none; }
             QPushButton {
-                background:#4ECDC4; color:white; border:none; border-radius:8px;
+                background:#4ECDC4; color:white; border:none; border-radius:6px;
                 padding:6px 12px; font-family:"Microsoft YaHei UI";
             }
             QPushButton:hover { background:#5fd9d2; }
             QPushButton:pressed { background:#3dbdb5; }
             QLineEdit {
                 background:#1a2029; color:white; border:1px solid #3a4555;
-                border-radius:8px; padding:6px 10px; font-family:"Microsoft YaHei UI";
+                border-radius:6px; padding:6px 10px; font-family:"Microsoft YaHei UI";
             }
             QLineEdit:focus { border:1px solid #4ECDC4; }
         """)
         self.setAttribute(Qt.WA_StyledBackground)
+        self._corner_radius = 10
+        self._dragging = False
+        self._drag_start = QPoint()
+        self._drag_win_origin = QPoint()
 
         # 透明度效果（用于展开/收起淡入淡出动画）
         self._opacity_effect = QGraphicsOpacityEffect(self)
@@ -436,7 +440,7 @@ class ChatPanel(QWidget):
         # 标题栏
         header = QWidget()
         header.setFixedHeight(44)
-        header.setStyleSheet("background:#1a2029; border:none;")
+        header.setStyleSheet("background:#1a2029; border:none; border-top-left-radius:10px; border-top-right-radius:10px;")
         hl = QHBoxLayout(header)
         hl.setContentsMargins(14, 0, 8, 0)
 
@@ -485,7 +489,7 @@ class ChatPanel(QWidget):
 
         # 输入区
         iw = QWidget()
-        iw.setStyleSheet("background:#1a2029; border:none;")
+        iw.setStyleSheet("background:#1a2029; border:none; border-bottom-left-radius:10px; border-bottom-right-radius:10px;")
         il = QVBoxLayout(iw)
         il.setContentsMargins(8, 6, 8, 8)
         il.setSpacing(6)
@@ -505,13 +509,46 @@ class ChatPanel(QWidget):
         row2 = QHBoxLayout()
         row2.setSpacing(6)
         self.tts_btn = QPushButton("🔊 朗读")
-        self.tts_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.tts_btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
         self.tts_btn.clicked.connect(self._on_tts_btn_click)
         row2.addWidget(self.tts_btn, 1)
 
         il.addLayout(row1)
         il.addLayout(row2)
         ml.addWidget(iw)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setBrush(QColor("#2b3441"))
+        p.setPen(QPen(QColor("#3a4555"), 1))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1),
+                          self._corner_radius, self._corner_radius)
+        p.end()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and event.position().y() < 44:
+            self._dragging = True
+            self._drag_start = event.globalPosition().toPoint()
+            self._drag_win_origin = self.window().pos()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._dragging:
+            delta = event.globalPosition().toPoint() - self._drag_start
+            self.window().move(self._drag_win_origin + delta)
+            event.accept()
+        else:
+            super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            event.accept()
+        else:
+            super().mouseReleaseEvent(event)
 
     def _on_send(self):
         text = self.input_box.text().strip()
@@ -873,11 +910,17 @@ class MainWidget(QWidget):
         self._panel._opacity_effect.setOpacity(1.0)
         self._stack.setCurrentIndex(0)
         self._circle.show()
+        # 根据面板当前位置计算悬浮球位置（右下角）
+        panel_pos = self.pos()
+        ball_pos = QPoint(
+            panel_pos.x() + self.PILL_W - self.BUBBLE_DIA,
+            panel_pos.y() + self.PILL_H - self.BUBBLE_DIA,
+        )
+        self._ball_pos = ball_pos
         self.setFixedSize(self.BUBBLE_DIA, self.BUBBLE_DIA)
         self.setMinimumSize(0, 0)
         self.setMaximumSize(16777215, 16777215)
-        if hasattr(self, '_ball_pos'):
-            self.move(self._ball_pos)
+        self.move(ball_pos)
 
     # ── 药丸菜单 ────────────────────────────────────────────
     def _show_pill_menu(self):
@@ -1150,7 +1193,7 @@ class MainWidget(QWidget):
         if playing:
             self._panel.tts_btn.setText("⏹ 停止朗读")
             self._panel.tts_btn.setStyleSheet(
-                "background:#ef4444; color:white; border:none; border-radius:8px;"
+                "background:#ef4444; color:white; border:none; border-radius:6px;"
                 "padding:6px 12px; font-family:\"Microsoft YaHei UI\";"
             )
         else:
