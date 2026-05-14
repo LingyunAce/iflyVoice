@@ -23,6 +23,8 @@ from PySide6.QtGui import (QPainter, QColor, QBrush, QPen, QFont, QPixmap,
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 SERVER_URL = "http://127.0.0.1:18766"
+
+from voice_pipeline import parse_voice_command
 OLLAMA_URL = SERVER_URL + "/ollama"
 SENSEVOICE_URL = SERVER_URL + "/sensevoice/transcribe"
 TTS_URL = SERVER_URL + "/v1/audio/speech"
@@ -995,7 +997,74 @@ class MainWidget(QWidget):
     # ── 聊天 ──────────────────────────────────────────────────
     def _on_user_message(self, text):
         self._panel.add_bubble(text, True)
-        self._chat_with_ai(text)
+        # 意图识别：正则快速匹配
+        intent = parse_voice_command(text)
+        if intent:
+            self._exec_display_control(intent)
+            return
+        # 正则未命中，用 LLM 纠错兜底（在后台线程执行，不阻塞 UI）
+        if self._pipeline:
+            self._panel.status_lbl.setText("正在识别意图...")
+            threading.Thread(target=self._intent_detect_and_dispatch,
+                             args=(text,), daemon=True).start()
+        else:
+            self._chat_with_ai(text)
+
+    def _intent_detect_and_dispatch(self, text):
+        """后台线程：LLM 意图识别 → 执行或走对话"""
+        try:
+            intent = self._pipeline._llm_intent_detect(text)
+            if intent:
+                self._exec_display_control_sync(intent)
+            else:
+                self._chat_with_ai(text)
+        except Exception as e:
+            _log(f"[意图] LLM 识别异常: {e}")
+            self._chat_with_ai(text)
+
+    def _exec_display_control(self, intent):
+        """执行显示器控制命令（文字输入触发）"""
+        def _do():
+            try:
+                if self._pipeline:
+                    reply = self._pipeline._execute_display_control(intent)
+                else:
+                    reply = "管线未启动"
+                self.sig_stream.emit(reply)
+                self.sig_done.emit(reply)
+                # TTS 播放回复
+                if self._pipeline:
+                    clean = _strip_md(reply)
+                    if clean:
+                        self._pipeline._interrupted = False
+                        self._pipeline.notify_tts_start()
+                        self._pipeline._start_tts_workers()
+                        self._pipeline._sentence_queue.append(clean)
+                        self._pipeline._sentence_queue.append(None)
+            except Exception as e:
+                self.sig_error.emit(str(e))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _exec_display_control_sync(self, intent):
+        """执行显示器控制命令（已在后台线程中，直接执行）"""
+        try:
+            if self._pipeline:
+                reply = self._pipeline._execute_display_control(intent)
+            else:
+                reply = "管线未启动"
+            self.sig_stream.emit(reply)
+            self.sig_done.emit(reply)
+            # TTS 播放回复
+            if self._pipeline:
+                clean = _strip_md(reply)
+                if clean:
+                    self._pipeline._interrupted = False
+                    self._pipeline.notify_tts_start()
+                    self._pipeline._start_tts_workers()
+                    self._pipeline._sentence_queue.append(clean)
+                    self._pipeline._sentence_queue.append(None)
+        except Exception as e:
+            self.sig_error.emit(str(e))
 
     def _chat_with_ai(self, text):
         self._panel.status_lbl.setText("连接 AI 服务...")

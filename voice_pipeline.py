@@ -75,6 +75,79 @@ def _strip_md(text):
     return s
 
 
+# ── 显示器控制意图识别 ───────────────────────────────────────────
+def parse_voice_command(text):
+    """将用户语音文字解析为显示器控制命令，返回 dict 或 None"""
+    if not text:
+        return None
+    t = text.lower().strip()
+
+    # ── 亮度 ──
+    m = re.search(r'(?:把\s*)?亮度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?', t)
+    if not m:
+        m = re.search(r'(?:亮度|屏幕)\s*[:：]?\s*(\d{1,3})%?', t)
+    if m:
+        return {"action": "set", "control": "brightness", "value": int(m.group(1))}
+
+    if re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大|最亮|full)', t):
+        return {"action": "set", "control": "brightness", "value": 100}
+    if re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小|最暗)', t):
+        return {"action": "set", "control": "brightness", "value": 0}
+    # 带数值的相对调整："亮度调高40" → delta +40
+    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:高|大|亮)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "brightness", "delta": int(m.group(1))}
+    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:低|小|暗)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "brightness", "delta": -int(m.group(1))}
+    if re.search(r'(?:亮度|屏幕|显示器).*(?:增高|调高|提高|升高|增加|加大|亮一点|更亮|变亮|再亮点|稍微亮点|亮一些|稍亮点|调亮一点)', t):
+        return {"action": "adjust", "control": "brightness", "delta": 10}
+    if re.search(r'(?:亮度|屏幕|显示器).*(?:调低|降低|减小|减弱|减少|暗一点|更暗|变暗|再暗点|稍微暗点|暗一些|稍暗点|调暗一点)', t):
+        return {"action": "adjust", "control": "brightness", "delta": -10}
+
+    # ── 对比度 ──
+    m = re.search(r'(?:把\s*)?对比度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?', t)
+    if m:
+        return {"action": "set", "control": "contrast", "value": int(m.group(1))}
+
+    if re.search(r'对比度\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大)', t):
+        return {"action": "set", "control": "contrast", "value": 100}
+    if re.search(r'对比度\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小)', t):
+        return {"action": "set", "control": "contrast", "value": 0}
+    m = re.search(r'对比度\s*(?:调|设)?(?:高|大)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "contrast", "delta": int(m.group(1))}
+    m = re.search(r'对比度\s*(?:调|设)?(?:低|小)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "contrast", "delta": -int(m.group(1))}
+    if re.search(r'对比度.*(?:增高|调高|提高|升高|增加|加大|增大|调大|高一点|高一些)', t):
+        return {"action": "adjust", "control": "contrast", "delta": 10}
+    if re.search(r'对比度.*(?:调低|降低|减小|减弱|减少|低一点|低一些)', t):
+        return {"action": "adjust", "control": "contrast", "delta": -10}
+
+    # ── 音量 ──
+    m = re.search(r'(?:把\s*)?音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?', t)
+    if m:
+        return {"action": "set", "control": "volume", "value": int(m.group(1))}
+
+    if re.search(r'音量.*(?:最高|最大|全开)', t):
+        return {"action": "set", "control": "volume", "value": 100}
+    if re.search(r'(?:静音|mute)', t) or re.search(r'音量.*(?:最低|最小|关掉)', t):
+        return {"action": "set", "control": "volume", "value": 0}
+    m = re.search(r'音量\s*(?:调|设)?(?:高|大)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "volume", "delta": int(m.group(1))}
+    m = re.search(r'音量\s*(?:调|设)?(?:低|小)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "volume", "delta": -int(m.group(1))}
+    if re.search(r'音量.*(?:增高|调高|提高|升高|增加|加大|大一点|大声点|声音大点|声音大一些|音量增大|声音变大|增大|变大)|声音(?:大一点|大些|变大)', t):
+        return {"action": "adjust", "control": "volume", "delta": 10}
+    if re.search(r'音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)', t):
+        return {"action": "adjust", "control": "volume", "delta": -10}
+
+    return None
+
+
 # ── 状态 ─────────────────────────────────────────────────────────
 class PipelineState:
     IDLE = "idle"                   # 麦克风热，VAD 监听
@@ -480,18 +553,176 @@ class VoicePipeline(QObject):
             _flog(f"[ASR] 去掉唤醒词后: {text}")
             self.command_captured.emit(text)
 
-            # 3. 启动实时 TTS 架构
+            # 3. 意图识别：正则快速匹配
+            intent = parse_voice_command(text)
+            if not intent:
+                # 正则未命中，用 LLM 纠错兜底
+                intent = self._llm_intent_detect(text)
+            if intent:
+                _flog(f"[意图] 命中显示器控制: {intent}")
+                reply = self._execute_display_control(intent)
+                self.ai_response_stream.emit(reply)
+                self.ai_response_done.emit(reply)
+                # TTS 播放回复
+                self._interrupted = False
+                self._start_tts_workers()
+                self.notify_tts_start()
+                clean = _strip_md(reply)
+                if clean:
+                    self._sentence_queue.append(clean)
+                self._sentence_queue.append(None)
+                return
+
+            # 4. 启动实时 TTS 架构
             self._interrupted = False
             self._start_tts_workers()
             self.notify_tts_start()  # 状态 → speaking + 通知 UI
 
-            # 4. LLM 流式生成 + 实时分句
+            # 5. LLM 流式生成 + 实时分句
             self._stream_llm_with_tts(text)
 
         except Exception as e:
             _flog(f"[处理] 异常: {e}")
             self.error_occurred.emit(str(e))
             self._set_state(PipelineState.IDLE)
+
+    def _http_get_json(self, path):
+        """GET 请求 server 端点，返回 JSON dict"""
+        url = self._server_url + path
+        try:
+            resp = urlopen(url, timeout=5)
+            return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            _flog(f"[HTTP] GET {path} 失败: {e}")
+            return None
+
+    def _http_post_json(self, path, data):
+        """POST 请求 server 端点，返回 JSON dict"""
+        url = self._server_url + path
+        try:
+            payload = json.dumps(data).encode()
+            req = Request(url, data=payload,
+                          headers={"Content-Type": "application/json"}, method="POST")
+            resp = urlopen(req, timeout=5)
+            return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            _flog(f"[HTTP] POST {path} 失败: {e}")
+            return None
+
+    def _execute_display_control(self, intent):
+        """执行显示器控制命令，返回 TTS 回复文字"""
+        action = intent["action"]
+        control = intent["control"]
+
+        # 读取 displayType
+        dt_resp = self._http_get_json("/config/displayType")
+        display_type = (dt_resp or {}).get("displayType", "native")
+
+        # 确定端点前缀
+        if control == "volume":
+            prefix = "/native"
+        elif display_type == "adb":
+            prefix = "/ddcci"
+        else:
+            prefix = "/native"
+
+        # 获取当前值（adjust 时需要）
+        current = None
+        if action == "adjust":
+            if control == "volume":
+                # 用 pycaw 读取实际系统音量（缓存可能过期）
+                try:
+                    from pycaw.pycaw import AudioUtilities
+                    speakers = AudioUtilities.GetSpeakers()
+                    vol = speakers.EndpointVolume
+                    current = int(vol.GetMasterVolumeLevelScalar() * 100)
+                    _flog(f"[控制] 实际音量: {current}%")
+                except Exception as e:
+                    _flog(f"[控制] pycaw 读取失败: {e}，使用缓存")
+                    r = self._http_get_json("/native/volume")
+                    current = (r or {}).get("volume", 50)
+            elif control == "brightness":
+                if prefix == "/ddcci":
+                    r = self._http_get_json("/ddcci/status")
+                    current = (r or {}).get("brightness", 50)
+                else:
+                    r = self._http_get_json("/native/status")
+                    current = (r or {}).get("brightness", 50)
+            elif control == "contrast":
+                if prefix == "/ddcci":
+                    r = self._http_get_json("/ddcci/contrast_read")
+                    current = (r or {}).get("value", 50)
+                else:
+                    r = self._http_get_json("/native/status")
+                    current = (r or {}).get("contrast", 50)
+
+        # 计算目标值
+        if action == "set":
+            value = intent["value"]
+        else:  # adjust
+            base = current if current is not None else 50
+            value = max(0, min(100, base + intent["delta"]))
+
+        # 执行
+        endpoint = f"{prefix}/{control}"
+        result = self._http_post_json(endpoint, {"value": value})
+        _flog(f"[控制] {control} → {value} (displayType={display_type})")
+
+        # 构造 TTS 回复
+        ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量"}.get(control, control)
+        reply = f"好的，已将{ctrl_name}设为{value}%"
+        return reply
+
+    def _llm_intent_detect(self, text):
+        """用 LLM 纠错兜底：判断文本是否包含显示器控制意图"""
+        try:
+            prompt = (
+                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n"
+                "规则：\n"
+                "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
+                "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
+                "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
+                "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
+                "输出JSON格式：{\"action\":\"set\",\"control\":\"brightness\",\"value\":50}\n"
+                "或 {\"action\":\"adjust\",\"control\":\"volume\",\"delta\":-10}\n"
+                "如果没有控制意图，只输出 null。只输出JSON或null，不解释。\n\n"
+                f"用户：{text}"
+            )
+            payload = json.dumps({
+                "model": "qwen3-vl:4b",
+                "messages": [{"role": "user", "content": prompt}],
+                "stream": False
+            }).encode()
+            req = Request(f"{self._server_url}/ollama/api/chat",
+                          data=payload,
+                          headers={"Content-Type": "application/json"},
+                          method="POST")
+            resp = urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode("utf-8"))
+            content = (data.get("message", {}) or {}).get("content", "").strip()
+            _flog(f"[意图LLM] 原始返回: {content}")
+
+            # 清理 think 标签
+            if "```" in content:
+                m = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
+                if m:
+                    content = m.group(1).strip()
+            elif ">" in content and "{" in content:
+                m = re.search(r'(\{[\s\S]*\})', content)
+                if m:
+                    content = m.group(1).strip()
+
+            if content.lower() in ("null", "none", ""):
+                return None
+
+            intent = json.loads(content)
+            if isinstance(intent, dict) and "control" in intent and "action" in intent:
+                _flog(f"[意图LLM] 纠错命中: {intent}")
+                return intent
+            return None
+        except Exception as e:
+            _flog(f"[意图LLM] 异常: {e}")
+            return None
 
     def _start_tts_workers(self):
         """启动 TTS 工作线程和音频播放线程"""

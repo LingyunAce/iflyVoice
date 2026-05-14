@@ -317,6 +317,22 @@ class Handler(BaseHTTPRequestHandler):
             Handler.SENSEVOICE_CONFIG["base_url"] = url
             _log(f"[Config] SenseVoice updated: {url}")
             self._send_json(200, {"success": True, "base_url": url})
+        elif endpoint == "displayType":
+            try:
+                if method == "GET":
+                    with Handler._state_lock:
+                        dt = Handler._native_state.get("displayType", "native")
+                    self._send_json(200, {"success": True, "displayType": dt})
+                elif method == "POST":
+                    dt = body.get("displayType", "native")
+                    with Handler._state_lock:
+                        Handler._native_state["displayType"] = dt
+                    Handler._save_state()
+                    _log(f"[Config] displayType updated: {dt}")
+                    self._send_json(200, {"success": True, "displayType": dt})
+            except Exception as e:
+                import traceback; _log(f"[Config] displayType error: {e}\n{traceback.format_exc()}\n")
+                self._send_json(500, {"success": False, "error": str(e)})
         else:
             self._send_json(404, {"success": False, "error": f"Unknown config: {endpoint}"})
 
