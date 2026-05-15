@@ -224,8 +224,14 @@ class ChatBubble(QLabel):
             self.setTextFormat(Qt.RichText)
             html = _md_to_html(text)
             super().setText(html)
-            self.setWordWrap(True)
-            self.setFixedWidth(self.MAX_BUBBLE_W)
+            natural = self._natural_width(text)
+            if natural <= self.MAX_BUBBLE_W:
+                self.setWordWrap(False)
+                self.setMinimumWidth(0)
+                self.setMaximumWidth(16777215)
+            else:
+                self.setWordWrap(True)
+                self.setFixedWidth(self.MAX_BUBBLE_W)
 
     def setText(self, text):
         self._set_content(text or "")
