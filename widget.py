@@ -984,6 +984,7 @@ class MainWidget(QWidget):
     sig_done = Signal(str)
     sig_error = Signal(str)
     sig_status = Signal(str)      # 跨线程更新状态文字
+    sig_chat = Signal(str)        # 跨线程触发对话
 
     def __init__(self, pipeline=None):
         super().__init__()
@@ -1050,6 +1051,7 @@ class MainWidget(QWidget):
         self.sig_done.connect(self._on_ai_done)
         self.sig_error.connect(self._on_ai_error)
         self.sig_status.connect(lambda s: self._panel.status_lbl.setText(s))
+        self.sig_chat.connect(self._chat_with_ai)
 
         # 连接管线信号
         if self._pipeline:
@@ -1317,14 +1319,14 @@ class MainWidget(QWidget):
         """后台线程：LLM 意图识别 → 执行或走对话"""
         try:
             # Regex 已在 _on_user_message 中尝试过，这里用 LLM 兜底
-            intent = self._pipeline._llm_intent_detect(text)
-            if intent:
-                self._exec_display_control_sync(intent)
+            intents = self._pipeline._llm_intent_detect(text)
+            if intents:
+                self._exec_display_control_sync(intents)
             else:
-                self._chat_with_ai(text)
+                self.sig_chat.emit(text)
         except Exception as e:
             _log(f"[意图] LLM 识别异常: {e}")
-            self._chat_with_ai(text)
+            self.sig_chat.emit(text)
 
     def _exec_display_control(self, intent):
         """执行显示器控制命令（文字输入触发）"""
@@ -1349,18 +1351,22 @@ class MainWidget(QWidget):
                 self.sig_error.emit(str(e))
         threading.Thread(target=_do, daemon=True).start()
 
-    def _exec_display_control_sync(self, intent):
+    def _exec_display_control_sync(self, intents):
         """执行显示器控制命令（已在后台线程中，直接执行）"""
         try:
-            if self._pipeline:
-                reply = self._pipeline._execute_display_control(intent)
-            else:
-                reply = "管线未启动"
-            self.sig_stream.emit(reply)
-            self.sig_done.emit(reply)
+            replies = []
+            for intent in intents:
+                if self._pipeline:
+                    reply = self._pipeline._execute_display_control(intent)
+                else:
+                    reply = "管线未启动"
+                replies.append(reply)
+            full_reply = "，".join(replies)
+            self.sig_stream.emit(full_reply)
+            self.sig_done.emit(full_reply)
             # TTS 播放回复
             if self._pipeline:
-                clean = _strip_md(reply)
+                clean = _strip_md(full_reply)
                 if clean:
                     self._pipeline._interrupted = False
                     self._pipeline.notify_tts_start()

@@ -575,20 +575,27 @@ class VoicePipeline(QObject):
             self.command_captured.emit(text)
 
             # 3. 意图识别：Regex → LLM
+            intents = None
             intent = parse_voice_command(text)
-            if not intent:
-                intent = self._llm_intent_detect(text)
             if intent:
-                _flog(f"[意图] 命中显示器控制: {intent}")
-                reply = self._execute_display_control(intent)
-                self.ai_response_stream.emit(reply)
-                self.ai_response_done.emit(reply)
+                intents = [intent]
+            else:
+                intents = self._llm_intent_detect(text)
+            if intents:
+                _flog(f"[意图] 命中显示器控制: {intents}")
+                replies = []
+                for it in intents:
+                    reply = self._execute_display_control(it)
+                    replies.append(reply)
+                full_reply = "，".join(replies)
+                self.ai_response_stream.emit(full_reply)
+                self.ai_response_done.emit(full_reply)
                 # TTS 播放回复（检查是否静音）
                 if not self._tts_muted:
                     self._interrupted = False
                     self.notify_tts_start()
                     self._start_tts_workers()
-                    clean = _strip_md(reply)
+                    clean = _strip_md(full_reply)
                     if clean:
                         self._sentence_queue.append(clean)
                     self._sentence_queue.append(None)
@@ -698,7 +705,7 @@ class VoicePipeline(QObject):
         return reply
 
     def _llm_intent_detect(self, text):
-        """用 LLM 判断文本是否包含显示器控制意图（含语义理解）"""
+        """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
                 "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n\n"
@@ -708,16 +715,19 @@ class VoicePipeline(QObject):
                 "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
                 "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
                 "语义理解（重要）：\n"
-                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼\" → 亮度过高，adjust brightness -15\n"
-                "- \"太暗/看不清/黑乎乎\" → 亮度过低，adjust brightness +15\n"
-                "- \"太吵/炸耳朵/震耳朵\" → 音量过高，adjust volume -15\n"
-                "- \"听不清/听不见/太小声\" → 音量过低，adjust volume +15\n"
+                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -15\n"
+                "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +15\n"
+                "- \"太吵/炸耳朵/震耳朵/太大声\" → 音量过高，adjust volume -15\n"
+                "- \"听不清/听不见/太小声/比较低/小了\" → 音量过低，adjust volume +15\n"
                 "- \"闭嘴/安静/别吵了\" → 静音，set volume 0\n"
                 "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -15\n"
                 "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度\"的抱怨或请求都算控制意图\n\n"
-                "输出JSON格式：{\"action\":\"set\",\"control\":\"brightness\",\"value\":50}\n"
-                "或 {\"action\":\"adjust\",\"control\":\"volume\",\"delta\":-15}\n"
-                "如果没有控制意图，只输出 null。只输出JSON或null，不解释。\n\n"
+                "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
+                "输出格式：\n"
+                "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15}\n"
+                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15},{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":15}]\n"
+                "没有控制意图：null\n"
+                "只输出JSON或null，不解释。\n\n"
                 f"用户：{text}"
             )
             payload = json.dumps({
@@ -729,7 +739,7 @@ class VoicePipeline(QObject):
                           data=payload,
                           headers={"Content-Type": "application/json"},
                           method="POST")
-            resp = urlopen(req, timeout=10)
+            resp = urlopen(req, timeout=30)
             data = json.loads(resp.read().decode("utf-8"))
             content = (data.get("message", {}) or {}).get("content", "").strip()
             _flog(f"[意图LLM] 原始返回: {content}")
@@ -747,10 +757,16 @@ class VoicePipeline(QObject):
             if content.lower() in ("null", "none", ""):
                 return None
 
-            intent = json.loads(content)
-            if isinstance(intent, dict) and "control" in intent and "action" in intent:
-                _flog(f"[意图LLM] 纠错命中: {intent}")
-                return intent
+            parsed = json.loads(content)
+            # 支持单个意图或多个意图
+            if isinstance(parsed, dict) and "control" in parsed and "action" in parsed:
+                _flog(f"[意图LLM] 命中: {[parsed]}")
+                return [parsed]
+            elif isinstance(parsed, list):
+                intents = [i for i in parsed if isinstance(i, dict) and "control" in i and "action" in i]
+                if intents:
+                    _flog(f"[意图LLM] 命中: {intents}")
+                    return intents
             return None
         except Exception as e:
             _flog(f"[意图LLM] 异常: {e}")
