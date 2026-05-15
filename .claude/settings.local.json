@@ -12,7 +12,27 @@
       "Bash(curl -s http://192.168.1.32:9997/v1/models)",
       "Bash(curl -s -H \"Authorization: Bearer sk-86ccca26e58a8\" http://192.168.1.32:9997/v1/models)",
       "Bash(curl -s http://192.168.1.32:9997/status)",
-      "Bash(taskkill //F //IM VoiceAI.exe)"
+      "Bash(taskkill //F //IM VoiceAI.exe)",
+      "Bash(rm -f widget.log)",
+      "Bash(curl -s --connect-timeout 3 http://192.168.1.32:9997/v1/models)",
+      "Bash(curl *)",
+      "Bash(tasklist //FI \"IMAGENAME eq python.exe\")",
+      "Bash(pip list *)",
+      "Bash(HF_HUB_DISABLE_SYMLINKS_WARNING=1 python *)",
+      "Bash(pip index *)",
+      "Bash(pip download *)",
+      "Bash(pip show *)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebFetch(domain:github.com)",
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(wmic process *)",
+      "Bash(taskkill /F /PID 3984)",
+      "Bash(taskkill /F /PID 69364)",
+      "Bash(cmd.exe //c \"taskkill /F /PID 3984\")",
+      "Bash(cmd.exe //c \"taskkill /F /PID 69364\")",
+      "Bash(ffplay -nodisp -autoexit -loglevel quiet /tmp/tts_0100f3cd1d14429d824c227eecc1511e.mp3)",
+      "Bash(pkill -f ffplay)",
+      "Bash(ls *.log)"
     ]
   }
 }

@@ -951,7 +951,6 @@ class SettingsDialog(QWidget):
         if self._main._pipeline:
             self._main._pipeline._mic_device = self._config.get("mic_device", None)
             self._main._pipeline._model = self._config.get("ollama_model", "qwen3-vl:4b")
-        _log(f"[设置] 已应用: {self._config}")
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1395,7 +1394,6 @@ class MainWidget(QWidget):
         self._panel.status_lbl.setText(f"思考中... ({self._wait_seconds}s)")
 
     def _do_chat(self, text):
-        _log(f"[CHAT] 开始请求")
         tts_started = False
         sentence_buffer = ""
         sentence_end_chars = set("。！？；\n.!?;")
@@ -1405,7 +1403,6 @@ class MainWidget(QWidget):
                 pre = Request("http://127.0.0.1:18766/ollama/api/tags",
                               headers={"Content-Type": "application/json"})
                 urlopen(pre, timeout=3).close()
-                _log("[CHAT] 预检通过")
             except Exception as e:
                 _log(f"[CHAT] 预检失败: {e}")
                 self.sig_error.emit(f"AI 服务不可达: {e}")
@@ -1426,7 +1423,6 @@ class MainWidget(QWidget):
                           headers={"Content-Type": "application/json"},
                           method="POST")
             resp = urlopen(req, timeout=90)
-            _log(f"[CHAT] 响应 status={resp.status}")
 
             full = ""
             buf = b""
@@ -1450,8 +1446,6 @@ class MainWidget(QWidget):
                             full += token
                             sentence_buffer += token
                             token_count += 1
-                            if token_count % 20 == 0:
-                                _flog(f"[CHAT] tokens={token_count} len={len(full)}")
                             # 每 5 个 token emit 一次，减少主线程信号队列压力
                             if token_count % 5 == 0 or token_count == 1:
                                 self.sig_stream.emit(full)
@@ -1469,7 +1463,6 @@ class MainWidget(QWidget):
                                     if sentence:
                                         clean = _strip_md(sentence)
                                         if clean:
-                                            _flog(f"[CHAT] 句子完成: {clean[:30]}...")
                                             self._pipeline._sentence_queue.append(clean)
                                         sentence_buffer = ""
                     except json.JSONDecodeError:
@@ -1522,7 +1515,6 @@ class MainWidget(QWidget):
             self._panel._scroll_to_bottom()
 
     def _on_ai_done(self, full):
-        _flog(f"[DONE] len={len(full)}")
         self._wait_timer.stop()
         self._flush_timer.stop()
         # 强制用最终文本更新气泡（忽略 dirty 标记）
@@ -1531,7 +1523,6 @@ class MainWidget(QWidget):
             self._panel._scroll_to_bottom()
         self._panel.status_lbl.setText("")
         self._ai_bubble = None
-        _flog(f"[DONE] 完成")
         if full:
             self._last_ai_text = full
 

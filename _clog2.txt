@@ -1,4 +1,0 @@
-c:\Users\a1318\WorkBuddy\xunfei_yuyin\iflyVoice\_vol_test.cs(84,34): error CS1002: 应输入 ;
-c:\Users\a1318\WorkBuddy\xunfei_yuyin\iflyVoice\_vol_test.cs(84,37): error CS1520: 方法必须具有返回类型
-
-STDERR:

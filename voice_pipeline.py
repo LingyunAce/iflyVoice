@@ -746,7 +746,6 @@ class VoicePipeline(QObject):
             resp = urlopen(req, timeout=30)
             data = json.loads(resp.read().decode("utf-8"))
             content = (data.get("message", {}) or {}).get("content", "").strip()
-            _flog(f"[意图LLM] 原始返回: {content}")
 
             # 清理 think 标签
             if "```" in content:
@@ -815,7 +814,6 @@ class VoicePipeline(QObject):
     def _tts_worker(self):
         """TTS 工作线程：从 Sentence Queue 取句子，生成音频，放入 Audio Queue"""
         gen = self._tts_generation
-        _flog(f"[TTS Worker] 启动 gen={gen}")
         while self._tts_running:
             try:
                 # 代次不匹配时退出（新 TTS 已启动）
@@ -830,32 +828,26 @@ class VoicePipeline(QObject):
 
                 sentence = self._sentence_queue.popleft()
                 if sentence is None:  # 结束信号
-                    _flog("[TTS Worker] 收到结束信号")
                     # 放入 None 到音频队列表示结束
                     self._audio_queue.append(None)
                     break
 
                 if self._interrupted:
-                    _flog("[TTS Worker] 被打断，跳过句子")
                     continue
 
-                _flog(f"[TTS Worker] 处理句子: {sentence[:30]}...")
                 # 调用 TTS 生成音频
                 audio_data = self._generate_tts(sentence)
                 if audio_data and not self._interrupted:
                     self._audio_queue.append(audio_data)
-                    _flog(f"[TTS Worker] 音频已放入队列: {len(audio_data)} bytes")
 
             except Exception as e:
                 _flog(f"[TTS Worker] 异常: {e}")
                 time.sleep(0.1)
 
-        _flog("[TTS Worker] 停止")
 
     def _audio_player(self):
         """音频播放线程：从 Audio Queue 取音频，播放"""
         gen = self._tts_generation  # 启动时的代次
-        _flog(f"[Audio Player] 启动 gen={gen}")
         while self._player_running:
             try:
                 # 代次不匹配时退出（新 TTS 已启动）
@@ -865,13 +857,11 @@ class VoicePipeline(QObject):
 
                 # 打断时立即退出
                 if self._interrupted:
-                    _flog("[Audio Player] 被打断，退出")
                     self._drain_audio_queue()
                     break
 
                 # 状态已不是 speaking 时退出
                 if self._state != PipelineState.SPEAKING:
-                    _flog(f"[Audio Player] 状态已变为 {self._state}，退出")
                     self._drain_audio_queue()
                     break
 
@@ -882,7 +872,6 @@ class VoicePipeline(QObject):
 
                 audio_data = self._audio_queue.popleft()
                 if audio_data is None:  # 结束信号
-                    _flog("[Audio Player] 收到结束信号")
                     break
 
                 # 再次检查打断标志（pop 后可能已被打断）
@@ -891,7 +880,6 @@ class VoicePipeline(QObject):
                     self._drain_audio_queue()
                     break
 
-                _flog(f"[Audio Player] 播放音频: {len(audio_data)} bytes")
                 finished = self._play_audio(audio_data)
                 if not finished:
                     self._drain_audio_queue()
@@ -901,7 +889,6 @@ class VoicePipeline(QObject):
                 _flog(f"[Audio Player] 异常: {e}")
                 time.sleep(0.1)
 
-        _flog(f"[Audio Player] 停止 gen={gen}")
         # 只有当前代次才通知 UI（防止旧线程干扰新线程）
         if gen == self._tts_generation:
             self.tts_done.emit()
@@ -1053,7 +1040,6 @@ class VoicePipeline(QObject):
                                     # 清理标点符号
                                     clean_sentence = _strip_md(sentence)
                                     if clean_sentence:
-                                        _flog(f"[LLM] 句子完成: {clean_sentence[:30]}...")
                                         self._sentence_queue.append(clean_sentence)
                                     sentence_buffer = ""
 

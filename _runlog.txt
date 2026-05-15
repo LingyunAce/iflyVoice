@@ -1,7 +1,0 @@
--1
-
-STDERR:
-devs=2
-device=0 handle=10637104
-device=1 handle=454840240
-NO_VOLUME_FOUND

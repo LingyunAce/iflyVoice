@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+build_widget/
+dist/
+*.log
+.native_state.json

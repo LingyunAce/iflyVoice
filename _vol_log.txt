@@ -1,5 +1,0 @@
-COMPILE exit=1
-stdout=c:\Users\a1318\WorkBuddy\xunfei_yuyin\iflyVoice\_vol_test.cs(84,34): error CS1002: 搴旇緭鍏� ;
-c:\Users\a1318\WorkBuddy\xunfei_yuyin\iflyVoice\_vol_test.cs(84,37): error CS1520: 鏂规硶蹇呴』鍏锋湁杩斿洖绫诲瀷
-
-stderr=

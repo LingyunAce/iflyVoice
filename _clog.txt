@@ -1,3 +1,0 @@
-error CS1504: 源文件“c:\Users\a1318\WorkBuddy\20260324155852\_vol_test.cs”未能打开(“系统找不到指定的文件。 ”)
-
----STDERR---
