@@ -1316,6 +1316,7 @@ class MainWidget(QWidget):
     def _intent_detect_and_dispatch(self, text):
         """后台线程：LLM 意图识别 → 执行或走对话"""
         try:
+            # Regex 已在 _on_user_message 中尝试过，这里用 LLM 兜底
             intent = self._pipeline._llm_intent_detect(text)
             if intent:
                 self._exec_display_control_sync(intent)

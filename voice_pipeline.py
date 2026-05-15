@@ -574,10 +574,9 @@ class VoicePipeline(QObject):
             _flog(f"[ASR] 去掉唤醒词后: {text}")
             self.command_captured.emit(text)
 
-            # 3. 意图识别：正则快速匹配
+            # 3. 意图识别：Regex → LLM
             intent = parse_voice_command(text)
             if not intent:
-                # 正则未命中，用 LLM 纠错兜底
                 intent = self._llm_intent_detect(text)
             if intent:
                 _flog(f"[意图] 命中显示器控制: {intent}")
@@ -699,17 +698,25 @@ class VoicePipeline(QObject):
         return reply
 
     def _llm_intent_detect(self, text):
-        """用 LLM 纠错兜底：判断文本是否包含显示器控制意图"""
+        """用 LLM 判断文本是否包含显示器控制意图（含语义理解）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n"
+                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n\n"
                 "规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
                 "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
                 "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
+                "语义理解（重要）：\n"
+                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼\" → 亮度过高，adjust brightness -15\n"
+                "- \"太暗/看不清/黑乎乎\" → 亮度过低，adjust brightness +15\n"
+                "- \"太吵/炸耳朵/震耳朵\" → 音量过高，adjust volume -15\n"
+                "- \"听不清/听不见/太小声\" → 音量过低，adjust volume +15\n"
+                "- \"闭嘴/安静/别吵了\" → 静音，set volume 0\n"
+                "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -15\n"
+                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度\"的抱怨或请求都算控制意图\n\n"
                 "输出JSON格式：{\"action\":\"set\",\"control\":\"brightness\",\"value\":50}\n"
-                "或 {\"action\":\"adjust\",\"control\":\"volume\",\"delta\":-10}\n"
+                "或 {\"action\":\"adjust\",\"control\":\"volume\",\"delta\":-15}\n"
                 "如果没有控制意图，只输出 null。只输出JSON或null，不解释。\n\n"
                 f"用户：{text}"
             )
@@ -791,6 +798,11 @@ class VoicePipeline(QObject):
         _flog(f"[TTS Worker] 启动 gen={gen}")
         while self._tts_running:
             try:
+                # 代次不匹配时退出（新 TTS 已启动）
+                if gen != self._tts_generation:
+                    _flog(f"[TTS Worker] 代次不匹配 (self={gen}, current={self._tts_generation})，退出")
+                    break
+
                 # 从队列取句子
                 if not self._sentence_queue:
                     time.sleep(0.05)
@@ -826,6 +838,11 @@ class VoicePipeline(QObject):
         _flog(f"[Audio Player] 启动 gen={gen}")
         while self._player_running:
             try:
+                # 代次不匹配时退出（新 TTS 已启动）
+                if gen != self._tts_generation:
+                    _flog(f"[Audio Player] 代次不匹配 (self={gen}, current={self._tts_generation})，退出")
+                    break
+
                 # 打断时立即退出
                 if self._interrupted:
                     _flog("[Audio Player] 被打断，退出")
