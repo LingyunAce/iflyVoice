@@ -180,6 +180,8 @@ class VoicePipeline(QObject):
         self._wake_threshold = wake_threshold
         self._silence_timeout_ms = silence_timeout_ms
         self._wake_listen_silence_ms = 3000  # WAKE_LISTEN 用更长的静音超时
+        self._wake_listen_max_ms = 30000     # WAKE_LISTEN 最大时长（30秒）
+        self._wake_listen_start_ts = 0       # WAKE_LISTEN 开始时间戳
 
         # 状态
         self._state = PipelineState.IDLE
@@ -391,6 +393,7 @@ class VoicePipeline(QObject):
                 self._speech_buffer = bytearray()
                 self._silence_frames = 0
                 self._last_wake_check_ts = 0
+                self._wake_listen_start_ts = time.time()
                 self._append_to_buffer(chunk)
                 self._set_state(PipelineState.WAKE_LISTEN)
 
@@ -416,11 +419,24 @@ class VoicePipeline(QObject):
                     self._silence_frames = 0
                     self._set_state(PipelineState.COMMAND_LISTEN)
                     return
+                else:
+                    # 唤醒词未命中，清理旧缓冲（保留最近 1.5 秒）
+                    max_keep = int(self._sample_rate * 1.5 * 2)
+                    if len(self._speech_buffer) > max_keep * 2:
+                        self._speech_buffer = self._speech_buffer[-max_keep:]
 
             # 静音超时：无唤醒词，回退到 IDLE（WAKE_LISTEN 用更长超时）
             silence_ms = self._silence_frames * (self._chunk_size / self._sample_rate * 1000)
             if silence_ms >= self._wake_listen_silence_ms:
                 _flog(f"[唤醒] 静音超时 {silence_ms:.0f}ms，无唤醒词")
+                self._speech_buffer = bytearray()
+                self._set_state(PipelineState.IDLE)
+                return
+
+            # 最大时长超时：防止无限卡在 WAKE_LISTEN
+            listen_ms = (now - self._wake_listen_start_ts) * 1000
+            if listen_ms >= self._wake_listen_max_ms:
+                _flog(f"[唤醒] 最大监听时长 {listen_ms:.0f}ms，无唤醒词，回退 IDLE")
                 self._speech_buffer = bytearray()
                 self._set_state(PipelineState.IDLE)
 
