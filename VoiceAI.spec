@@ -10,7 +10,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['cv2', 'opencv-python', 'scipy', 'pandas', 'sklearn', 'scikit-learn', 'matplotlib', 'PIL', 'Pillow', 'llvmlite', 'numba', 'onnxruntime', 'av', 'av.libs', 'ctranslate2', 'py_mini_racer', 'lxml', 'curl_cffi', 'hf_xet', 'transformers', 'tokenizers', 'torchaudio', 'torchvision', 'sympy', 'tensorboard', 'jinja2', 'IPython', 'ipykernel', 'ipywidgets', 'jupyter', 'notebook', 'pytest', 'unittest', 'setuptools', 'distutils', 'pkg_resources', 'comtypes', 'pythoncom', 'win32com', 'qtpy', 'rich', 'pygments'],
     noarchive=False,
     optimize=0,
 )
@@ -29,7 +29,7 @@ exe = EXE(
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True,
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

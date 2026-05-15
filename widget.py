@@ -715,7 +715,8 @@ class PillMenu(QWidget):
         # 杀掉所有残留的 ffplay 进程
         try:
             subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
-                           capture_output=True, timeout=3)
+                           capture_output=True, timeout=3,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
             pass
         QApplication.quit()
@@ -1619,6 +1620,10 @@ def run_server():
 
 
 def main():
+    # 无控制台模式：将 stderr 重定向到日志文件
+    if sys.stderr is None or not hasattr(sys.stderr, 'fileno') or sys.stderr.fileno() < 0:
+        sys.stderr = open(_log_path, "a", encoding="utf-8")
+
     t = threading.Thread(target=run_server, daemon=True)
     t.start()
 
@@ -1649,7 +1654,8 @@ def main():
         pipeline.stop()
         try:
             subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
-                           capture_output=True, timeout=3)
+                           capture_output=True, timeout=3,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
             pass
 

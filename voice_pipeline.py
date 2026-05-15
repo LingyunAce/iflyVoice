@@ -274,7 +274,8 @@ class VoicePipeline(QObject):
             try:
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(self._current_ffplay_proc.pid)],
-                    capture_output=True, timeout=3
+                    capture_output=True, timeout=3,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
                 )
             except Exception:
                 try:
@@ -494,7 +495,8 @@ class VoicePipeline(QObject):
             proc = subprocess.run(
                 ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
                  "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
-                input=pcm_data, capture_output=True, timeout=5
+                input=pcm_data, capture_output=True, timeout=5,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if proc.returncode != 0:
                 return False
@@ -540,7 +542,8 @@ class VoicePipeline(QObject):
             proc = subprocess.run(
                 ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
                  "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
-                input=pcm_data, capture_output=True, timeout=15
+                input=pcm_data, capture_output=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if proc.returncode != 0:
                 _flog(f"[ASR] ffmpeg 错误: {proc.stderr.decode('utf-8', errors='replace')[:200]}")
@@ -936,6 +939,7 @@ class VoicePipeline(QObject):
             proc = subprocess.Popen(
                 ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", audio_file],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             self._current_ffplay_proc = proc
 
@@ -946,7 +950,8 @@ class VoicePipeline(QObject):
                     try:
                         subprocess.run(
                             ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                            capture_output=True, timeout=3
+                            capture_output=True, timeout=3,
+                            creationflags=subprocess.CREATE_NO_WINDOW,
                         )
                     except Exception:
                         try:

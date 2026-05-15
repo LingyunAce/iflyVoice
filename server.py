@@ -219,7 +219,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _check_adb_connection(self):
         try:
-            result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10)
+            result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             lines = result.stdout.strip().split("\n")
             devices = [l for l in lines[1:] if l.strip() and "device" in l]
             self._send_json(200, {"connected": len(devices) > 0, "deviceCount": len(devices), "devices": devices, "output": result.stdout})
@@ -241,7 +242,8 @@ class Handler(BaseHTTPRequestHandler):
             adb_cmd = ["adb", "shell"] + [cmd_type] + args
         try:
             _log(f"[I2C] Executing: {' '.join(adb_cmd)}")
-            result = subprocess.run(adb_cmd, capture_output=True, text=True, timeout=30)
+            result = subprocess.run(adb_cmd, capture_output=True, text=True, timeout=30,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             success = result.returncode == 0
             resp = {"success": success, "command": " ".join(adb_cmd), "returnCode": result.returncode,
                     "stdout": (result.stdout or "").strip(), "stderr": (result.stderr or "").strip()}
@@ -257,12 +259,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             test_cmd = ["adb", "shell", "i2cget", "-y", "-f", "0x37", "0x37", "0x00", "b"]
             _log(f"[DDC/CI] 检测中: {' '.join(test_cmd)}")
-            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10)
+            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             if result.returncode == 0 and result.stdout.strip():
                 self._send_json(200, {"supported": True, "detail": f"VCP readable: {result.stdout.strip()[:20]}"})
             else:
                 detect_cmd = ["adb", "shell", "i2cdetect", "-y", "-f", "0x37"]
-                det_result = subprocess.run(detect_cmd, capture_output=True, text=True, timeout=10)
+                det_result = subprocess.run(detect_cmd, capture_output=True, text=True, timeout=10,
+                                             creationflags=subprocess.CREATE_NO_WINDOW)
                 output = (det_result.stdout or "").strip()
                 has_devices = any(c in output for c in ['30', '31', '36', '37', '49', '50'])
                 if has_devices:
@@ -566,7 +570,8 @@ class Handler(BaseHTTPRequestHandler):
                   "@{connected=$true; brightness=($c.CurrentBrightness); instanceName=$m.InstanceName} | ConvertTo-Json -Compress"
                   "} else {@{connected=$false; error='WMI brightness not available'} | ConvertTo-Json -Compress}")
         try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             output = result.stdout.strip()
             if output:
                 import json as _json; data = _json.loads(output); self._send_json(200, data)
@@ -578,7 +583,8 @@ class Handler(BaseHTTPRequestHandler):
         script = ("$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
                   "if ($m) { $m.WmiSetBrightness(1, %d); Write-Host 'OK' } else { Write-Host 'ERR' }") % value
         try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             out = result.stdout.strip()
             if "OK" in out: self._send_json(200, {"success": True, "brightness": value})
             else: self._send_json(200, {"success": False, "error": "WMI brightness not available"})
@@ -590,7 +596,8 @@ class Handler(BaseHTTPRequestHandler):
                   "if ($m) {try { $m.WmiSetContrast(%d, 1); Write-Host 'OK' } catch { Write-Host ('ERR:' + $_.Exception.Message) } "
                   "} else { Write-Host 'ERR: WMI contrast not available' }") % value
         try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15)
+            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
+                                     creationflags=subprocess.CREATE_NO_WINDOW)
             out = result.stdout.strip()
             if "OK" in out: self._send_json(200, {"success": True, "contrast": value})
             else: self._send_json(200, {"success": False, "error": out})
@@ -711,7 +718,8 @@ class Handler(BaseHTTPRequestHandler):
         if csc_path and os.path.exists(vol_src) and not os.path.exists(vol_exe):
             try:
                 cwd = os.getcwd(); os.chdir(STATIC_DIR)
-                compile_r = subprocess.run([csc_path, "/target:exe", f"/out:{os.path.basename(vol_exe)}", "/nologo", os.path.basename(vol_src)], capture_output=True, timeout=30)
+                compile_r = subprocess.run([csc_path, "/target:exe", f"/out:{os.path.basename(vol_exe)}", "/nologo", os.path.basename(vol_src)], capture_output=True, timeout=30,
+                                            creationflags=subprocess.CREATE_NO_WINDOW)
                 os.chdir(cwd)
                 if compile_r.returncode == 0 and os.path.exists(vol_exe): _log("[Native] 音量启动: C# 编译成功")
                 else: vol_exe = None
@@ -719,7 +727,8 @@ class Handler(BaseHTTPRequestHandler):
         elif not os.path.exists(vol_src): vol_exe = None
         if vol_exe and os.path.exists(vol_exe):
             try:
-                run_r = subprocess.run([vol_exe], capture_output=True, text=True, timeout=10, errors="replace")
+                run_r = subprocess.run([vol_exe], capture_output=True, text=True, timeout=10, errors="replace",
+                                        creationflags=subprocess.CREATE_NO_WINDOW)
                 out = run_r.stdout.strip()
                 if out.lstrip('-').isdigit():
                     v = int(out)

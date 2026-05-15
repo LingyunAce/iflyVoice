@@ -32,7 +32,11 @@
       "Bash(cmd.exe //c \"taskkill /F /PID 69364\")",
       "Bash(ffplay -nodisp -autoexit -loglevel quiet /tmp/tts_0100f3cd1d14429d824c227eecc1511e.mp3)",
       "Bash(pkill -f ffplay)",
-      "Bash(ls *.log)"
+      "Bash(ls *.log)",
+      "Bash(taskkill /F /IM VoiceAI.exe)",
+      "Bash(taskkill /F /PID 29660)",
+      "Bash(taskkill /F /PID 10716)",
+      "Bash(cmd.exe /c \"taskkill /F /IM VoiceAI.exe\")"
     ]
   }
 }

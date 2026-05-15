@@ -18,19 +18,47 @@ for d in [DIST_DIR, BUILD_DIR]:
 
 src = os.path.abspath("server.py")
 static = os.path.abspath("embedded_static.py")
+EXCLUDES = [
+    # 大包，项目不依赖
+    "cv2", "opencv-python",
+    "scipy", "pandas", "sklearn", "scikit-learn",
+    "matplotlib", "PIL", "Pillow",
+    "llvmlite", "numba",
+    "onnxruntime",
+    "av", "av.libs",
+    "ctranslate2",
+    "py_mini_racer",
+    "lxml",
+    "curl_cffi",
+    "hf_xet",
+    "transformers", "tokenizers",
+    "torchaudio", "torchvision",
+    "sympy",
+    "tensorboard",
+    "jinja2",
+    "IPython", "ipykernel", "ipywidgets",
+    "jupyter", "notebook",
+    "pytest", "unittest",
+    "setuptools", "distutils", "pkg_resources",
+    "comtypes", "pythoncom", "win32com",
+    "qtpy",
+    "rich", "pygments",
+]
 cmd = [
     PYTHON, "-m", "PyInstaller",
     "--name=VoiceAI",
     "--onefile",
     "--noconfirm",
-    "--console",   # show console for error output
+    "--windowed",  # no console window
     "--distpath", DIST_DIR,
     "--workpath", BUILD_DIR,
     "--clean",
     "--add-data", f"{src};.",
     "--add-data", f"{static};.",
-    "widget.py",
 ]
+for mod in EXCLUDES:
+    cmd += ["--exclude-module", mod]
+cmd.append("widget.py")
 print("Running PyInstaller...")
 r = subprocess.run(cmd)
 if r.returncode != 0:
