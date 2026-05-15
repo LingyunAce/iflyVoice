@@ -1070,7 +1070,7 @@ class MainWidget(QWidget):
     def _move_to_corner(self):
         screen = QApplication.primaryScreen()
         if screen:
-            geo = screen.geometry()
+            geo = screen.availableGeometry()  # 排除任务栏区域
             self.move(geo.right() - self.width() - 20, geo.bottom() - self.height() - 20)
 
     # ── 展开 / 收起动画 ──────────────────────────────────────
