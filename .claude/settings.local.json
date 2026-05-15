@@ -36,7 +36,17 @@
       "Bash(taskkill /F /IM VoiceAI.exe)",
       "Bash(taskkill /F /PID 29660)",
       "Bash(taskkill /F /PID 10716)",
-      "Bash(cmd.exe /c \"taskkill /F /IM VoiceAI.exe\")"
+      "Bash(cmd.exe /c \"taskkill /F /IM VoiceAI.exe\")",
+      "Bash(where ffplay *)",
+      "Bash(where ffmpeg *)",
+      "Bash(winget install *)",
+      "Bash(export PATH=\"$PATH:/c/Users/hulingyun/AppData/Local/Microsoft/WinGet/Links\")",
+      "Bash(ffplay -version)",
+      "Read(//c/Users/hulingyun/AppData/Local/Microsoft/WinGet/Packages/**)",
+      "Read(//c/Users/hulingyun/AppData/Local/Microsoft/WinGet/Links/**)",
+      "Read(//c/Users/hulingyun/AppData/Local/Microsoft/WinGet/**)",
+      "Bash(\"/c/Users/hulingyun/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1.1-full_build/bin/ffplay.exe\" -version)",
+      "Bash(taskkill *)"
     ]
   }
 }

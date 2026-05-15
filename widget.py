@@ -746,8 +746,8 @@ class SettingsDialog(QWidget):
             "mic_device": "",
             "mute_tts": False,
             "audio_url": "http://192.168.1.32:9997",
-            "ollama_url": "http://192.168.1.32:11434",
-            "ollama_model": "qwen3-vl:4b",
+            "ollama_url": "http://localhost:11434",
+            "ollama_model": "qwen3:8b",
         }
         try:
             if os.path.exists(self._config_file):
@@ -913,7 +913,7 @@ class SettingsDialog(QWidget):
         except Exception as e:
             _log(f"[设置] 获取模型列表失败: {e}")
             # 回退：至少显示配置中的模型
-            saved = self._config.get("ollama_model", "qwen3-vl:4b")
+            saved = self._config.get("ollama_model", "qwen3:8b")
             self._ollama_model_combo.addItem(saved)
 
     def _apply_config(self):
@@ -929,7 +929,7 @@ class SettingsDialog(QWidget):
         self._ollama_url_edit.setText(self._config.get("ollama_url", SERVER_URL))
         # 模型列表
         self._refresh_model_list()
-        saved_model = self._config.get("ollama_model", "qwen3-vl:4b")
+        saved_model = self._config.get("ollama_model", "qwen3:8b")
         idx = self._ollama_model_combo.findText(saved_model)
         if idx >= 0:
             self._ollama_model_combo.setCurrentIndex(idx)
@@ -939,7 +939,7 @@ class SettingsDialog(QWidget):
         self._config["mute_tts"] = self._mute_cb.isChecked()
         self._config["audio_url"] = self._audio_url_edit.text().strip() or SERVER_URL
         self._config["ollama_url"] = self._ollama_url_edit.text().strip() or SERVER_URL
-        self._config["ollama_model"] = self._ollama_model_combo.currentText() or "qwen3-vl:4b"
+        self._config["ollama_model"] = self._ollama_model_combo.currentText() or "qwen3:8b"
         self._save_config()
         self._apply_to_main()
         self.hide()
@@ -951,7 +951,7 @@ class SettingsDialog(QWidget):
         # Pipeline 麦克风设备 + 模型
         if self._main._pipeline:
             self._main._pipeline._mic_device = self._config.get("mic_device", None)
-            self._main._pipeline._model = self._config.get("ollama_model", "qwen3-vl:4b")
+            self._main._pipeline._model = self._config.get("ollama_model", "qwen3:8b")
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -1309,9 +1309,9 @@ class MainWidget(QWidget):
     def _on_user_message(self, text):
         self._panel.add_bubble(text, True)
         # 意图识别：正则快速匹配
-        intent = parse_voice_command(text)
-        if intent:
-            self._exec_display_control(intent)
+        intents = parse_voice_command(text)
+        if intents:
+            self._exec_display_control(intents)
             return
         # 正则未命中，用 LLM 纠错兜底（在后台线程执行，不阻塞 UI）
         if self._pipeline:
@@ -1334,19 +1334,23 @@ class MainWidget(QWidget):
             _log(f"[意图] LLM 识别异常: {e}")
             self.sig_chat.emit(text)
 
-    def _exec_display_control(self, intent):
+    def _exec_display_control(self, intents):
         """执行显示器控制命令（文字输入触发）"""
         def _do():
             try:
-                if self._pipeline:
-                    reply = self._pipeline._execute_display_control(intent)
-                else:
-                    reply = "管线未启动"
-                self.sig_stream.emit(reply)
-                self.sig_done.emit(reply)
+                replies = []
+                for intent in intents:
+                    if self._pipeline:
+                        reply = self._pipeline._execute_display_control(intent)
+                    else:
+                        reply = "管线未启动"
+                    replies.append(reply)
+                full_reply = "，".join(replies)
+                self.sig_stream.emit(full_reply)
+                self.sig_done.emit(full_reply)
                 # TTS 播放回复
                 if self._pipeline:
-                    clean = _strip_md(reply)
+                    clean = _strip_md(full_reply)
                     if clean:
                         self._pipeline._interrupted = False
                         self._pipeline.notify_tts_start()
@@ -1412,7 +1416,7 @@ class MainWidget(QWidget):
             self.sig_status.emit("模型加载中...")
 
             # 2. 正式请求：使用 urllib（比 http.client 对 GIL 更友好）
-            model = self._pipeline._model if self._pipeline else "qwen3-vl:4b"
+            model = self._pipeline._model if self._pipeline else "qwen3:8b"
             payload = json.dumps({
                 "model": model,
                 "messages": [{"role": "user", "content": text}],

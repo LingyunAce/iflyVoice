@@ -1,6 +1,6 @@
 /**
  * main.js — 语音 AI 助手主控制器
- * 负责：语音识别（浏览器 / 讯飞 / SenseVoice）+ AI 对话（本地 Ollama qwen3-vl:4b）+ UI 联动
+ * 负责：语音识别（浏览器 / 讯飞 / SenseVoice）+ AI 对话（本地 Ollama qwen3:8b）+ UI 联动
  */
 class SpeechAIApp {
     constructor() {
@@ -26,7 +26,7 @@ class SpeechAIApp {
     this.aiStatusEl      = document.getElementById('aiStatus');
     this.clearChatBtn    = document.getElementById('clearChatBtn');
 
-        // ── AI 客户端（Ollama qwen3-vl:4b）──
+        // ── AI 客户端（Ollama qwen3:8b）──
         this.ollama = null;      // OllamaClient 实例
         this.aiClient = null;   // 当前活跃的客户端
 
@@ -76,7 +76,7 @@ class SpeechAIApp {
         // 如果上一个正在生成，先中断
         if (this.aiClient) this.aiClient.abort();
 
-        const model = this.modelNameInput?.value?.trim() || 'qwen3-vl:4b';
+        const model = this.modelNameInput?.value?.trim() || 'qwen3:8b';
         this.ollama = new OllamaClient({
             model: model,
             onToken: (token, full) => {
@@ -97,7 +97,7 @@ class SpeechAIApp {
     /** 应用 Ollama URL + 模型变更 */
     _applyOllamaUrl() {
         const url = (this.ollamaUrlInput?.value || '').trim();
-        const model = (this.modelNameInput?.value || 'qwen3-vl:4b').trim();
+        const model = (this.modelNameInput?.value || 'qwen3:8b').trim();
         if (!url) return;
         // 提取 host:port
         const colonIdx = url.lastIndexOf(':');
@@ -442,7 +442,7 @@ class SpeechAIApp {
 
             // 创建临时客户端避免冲突
             const tmpClient = new OllamaClient({
-                model: 'qwen3-vl:4b',
+                model: 'qwen3:8b',
                 onToken: () => {},      // 不流式显示
                 onDone: (clean) => {
                     // AI 回来后，追加一条小提示（可选）

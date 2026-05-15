@@ -2,6 +2,6 @@
   "mic_device": "",
   "mute_tts": false,
   "audio_url": "http://192.168.1.32:9997",
-  "ollama_url": "http://192.168.1.32:11434",
-  "ollama_model": "qwen3-vl:4b"
+  "ollama_url": "http://localhost:11434",
+  "ollama_model": "qwen2.5:3b"
 }

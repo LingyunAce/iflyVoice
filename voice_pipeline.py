@@ -76,10 +76,8 @@ def _strip_md(text):
 
 
 # ── 显示器控制意图识别 ───────────────────────────────────────────
-def parse_voice_command(text):
-    """将用户语音文字解析为显示器控制命令，返回 dict 或 None"""
-    if not text:
-        return None
+def _parse_single(text):
+    """解析单条控制命令"""
     t = text.lower().strip()
 
     # ── 亮度 ──
@@ -88,63 +86,94 @@ def parse_voice_command(text):
         m = re.search(r'(?:亮度|屏幕)\s*[:：]?\s*(\d{1,3})%?', t)
     if m:
         return {"action": "set", "control": "brightness", "value": int(m.group(1))}
-
     if re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大|最亮|full)', t):
         return {"action": "set", "control": "brightness", "value": 100}
     if re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小|最暗)', t):
         return {"action": "set", "control": "brightness", "value": 0}
-    # 带数值的相对调整："亮度调高40" → delta +40
-    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:高|大|亮)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设|加|增|提高)?(?:高|大|亮|多)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "brightness", "delta": int(m.group(1))}
-    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:低|小|暗)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'(?:亮度|屏幕)\s*(?:调|设|减|降|降低)?(?:低|小|暗|少)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "brightness", "delta": -int(m.group(1))}
-    if re.search(r'(?:亮度|屏幕|显示器).*(?:增高|调高|提高|升高|增加|加大|亮一点|更亮|变亮|再亮点|稍微亮点|亮一些|稍亮点|调亮一点)', t):
+    # 语义表达：亮度调高/调低一点
+    if re.search(r'(?:亮度|屏幕).*(?:调高|提高|升高|增加|加大|亮一点|更亮|变亮|亮一些|亮点)', t):
         return {"action": "adjust", "control": "brightness", "delta": 10}
-    if re.search(r'(?:亮度|屏幕|显示器).*(?:调低|降低|减小|减弱|减少|暗一点|更暗|变暗|再暗点|稍微暗点|暗一些|稍暗点|调暗一点)', t):
+    if re.search(r'(?:亮度|屏幕).*(?:调低|降低|减小|减弱|暗一点|更暗|变暗|暗一些|暗点)', t):
         return {"action": "adjust", "control": "brightness", "delta": -10}
+    # 太亮/太暗（无需"亮度"关键词）
+    if re.search(r'太亮|刺眼|晃眼|亮瞎', t):
+        return {"action": "adjust", "control": "brightness", "delta": -15}
+    if re.search(r'太暗|看不清|黑乎乎', t):
+        return {"action": "adjust", "control": "brightness", "delta": 15}
 
     # ── 对比度 ──
     m = re.search(r'(?:把\s*)?对比度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?', t)
     if m:
         return {"action": "set", "control": "contrast", "value": int(m.group(1))}
-
     if re.search(r'对比度\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大)', t):
         return {"action": "set", "control": "contrast", "value": 100}
     if re.search(r'对比度\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小)', t):
         return {"action": "set", "control": "contrast", "value": 0}
-    m = re.search(r'对比度\s*(?:调|设)?(?:高|大)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'对比度\s*(?:调|设|加|增|提高)?(?:高|大|多)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "contrast", "delta": int(m.group(1))}
-    m = re.search(r'对比度\s*(?:调|设)?(?:低|小)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'对比度\s*(?:调|设|减|降|降低)?(?:低|小|少)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "contrast", "delta": -int(m.group(1))}
-    if re.search(r'对比度.*(?:增高|调高|提高|升高|增加|加大|增大|调大|高一点|高一些)', t):
+    # 语义表达：对比度调高/调低一点
+    if re.search(r'对比度.*(?:调高|提高|升高|增加|加大|高一点|高一些)', t):
         return {"action": "adjust", "control": "contrast", "delta": 10}
-    if re.search(r'对比度.*(?:调低|降低|减小|减弱|减少|低一点|低一些)', t):
+    if re.search(r'对比度.*(?:调低|降低|减小|减弱|低一点|低一些)', t):
         return {"action": "adjust", "control": "contrast", "delta": -10}
 
     # ── 音量 ──
     m = re.search(r'(?:把\s*)?音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?', t)
     if m:
         return {"action": "set", "control": "volume", "value": int(m.group(1))}
-
     if re.search(r'音量.*(?:最高|最大|全开)', t):
         return {"action": "set", "control": "volume", "value": 100}
     if re.search(r'(?:静音|mute)', t) or re.search(r'音量.*(?:最低|最小|关掉)', t):
         return {"action": "set", "control": "volume", "value": 0}
-    m = re.search(r'音量\s*(?:调|设)?(?:高|大)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'音量\s*(?:调|设|加|增|提高)?(?:高|大|多)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "volume", "delta": int(m.group(1))}
-    m = re.search(r'音量\s*(?:调|设)?(?:低|小)\s*(\d{1,3})', t)
-    if m:
+    m = re.search(r'音量\s*(?:调|设|减|降|降低)?(?:低|小|少)?\s*(\d{1,3})', t)
+    if m and m.group(1):
         return {"action": "adjust", "control": "volume", "delta": -int(m.group(1))}
-    if re.search(r'音量.*(?:增高|调高|提高|升高|增加|加大|大一点|大声点|声音大点|声音大一些|音量增大|声音变大|增大|变大)|声音(?:大一点|大些|变大)', t):
+    # 语义表达：音量调高/调低一点
+    if re.search(r'(?:音量|声音).*(?:调高|提高|升高|增加|加大|大一点|大声点|声音大点|大一些|增大|变大)', t):
         return {"action": "adjust", "control": "volume", "delta": 10}
-    if re.search(r'音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)', t):
+    if re.search(r'(?:音量|声音).*(?:调低|降低|减小|减弱|小一点|小声点|声音小点|小一些|减小|变小)', t):
         return {"action": "adjust", "control": "volume", "delta": -10}
+    # 太吵/太小声（无需"音量"关键词）
+    if re.search(r'太吵|太响|太大声|太大了|震耳朵|炸耳朵', t):
+        return {"action": "adjust", "control": "volume", "delta": -15}
+    if re.search(r'太小声|听不清|听不见|太小了', t):
+        return {"action": "adjust", "control": "volume", "delta": 15}
+    # 静音/闭嘴
+    if re.search(r'闭嘴|安静|别吵了|别说了', t):
+        return {"action": "set", "control": "volume", "value": 0}
 
+    return None
+
+
+def parse_voice_command(text):
+    """精确数值命令的快速匹配，支持复合意图（语义理解交给 LLM）"""
+    if not text:
+        return None
+    # 按逗号、分号、顿号拆分复合意图
+    parts = re.split(r'[,，;；、]', text)
+    intents = []
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+        result = _parse_single(part)
+        if result:
+            intents.append(result)
+    if intents:
+        return intents
     return None
 
 
@@ -194,6 +223,7 @@ class VoicePipeline(QObject):
         # 模型
         self._vad_model = None
         self._oww_model = None
+        self._whisper_model = None
 
         # 音频缓冲
         self._audio_deque = collections.deque(maxlen=100)  # ~3.2s buffer
@@ -220,7 +250,7 @@ class VoicePipeline(QObject):
         self._tts_generation = 0                    # TTS 代次（防旧线程干扰新线程）
         self._tts_muted = False                     # 禁止自动朗读
         self._mic_device = None                     # 麦克风设备（None=默认）
-        self._model = "qwen3-vl:4b"                # LLM 模型名称
+        self._model = "qwen3:8b"                # LLM 模型名称
 
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
@@ -310,6 +340,16 @@ class VoicePipeline(QObject):
 
         # 唤醒词检测使用 ASR 方式，无需额外模型
         _flog("[唤醒] 使用 ASR 方式检测唤醒词")
+
+        # faster-whisper ASR
+        try:
+            _flog("[ASR] 加载 faster-whisper 模型...")
+            from faster_whisper import WhisperModel
+            self._whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+            _flog("[ASR] faster-whisper 加载完成")
+        except Exception as e:
+            _flog(f"[ASR] faster-whisper 加载失败: {e}，将回退到 SenseVoice")
+            self._whisper_model = None
 
     def _audio_loop(self):
         """音频采集 + 状态机主循环"""
@@ -489,24 +529,27 @@ class VoicePipeline(QObject):
             return False
 
         try:
-            # 将缓冲的 PCM 转为 webm 发送到 ASR
             pcm_data = bytes(self._speech_buffer)
-            webm_file = os.path.join(tempfile.gettempdir(), f"wake_{uuid.uuid4().hex}.webm")
-            proc = subprocess.run(
-                ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
-                 "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
-                input=pcm_data, capture_output=True, timeout=5,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if proc.returncode != 0:
-                return False
 
-            # 发送到 ASR
-            text = self._transcribe(webm_file)
-            try:
-                os.unlink(webm_file)
-            except Exception:
-                pass
+            # 优先用 faster-whisper 本地识别
+            if self._whisper_model is not None:
+                text = self._transcribe_pcm(pcm_data)
+            else:
+                # 回退：转 webm 发送到 SenseVoice
+                webm_file = os.path.join(tempfile.gettempdir(), f"wake_{uuid.uuid4().hex}.webm")
+                proc = subprocess.run(
+                    ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
+                     "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
+                    input=pcm_data, capture_output=True, timeout=5,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if proc.returncode != 0:
+                    return False
+                text = self._transcribe(webm_file)
+                try:
+                    os.unlink(webm_file)
+                except Exception:
+                    pass
 
             if not text:
                 return False
@@ -537,27 +580,30 @@ class VoicePipeline(QObject):
     def _process_command(self, pcm_data):
         """Worker 线程：ASR + LLM + 实时 TTS"""
         try:
-            # 1. PCM → webm
-            webm_file = os.path.join(tempfile.gettempdir(), f"cmd_{uuid.uuid4().hex}.webm")
-            proc = subprocess.run(
-                ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
-                 "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
-                input=pcm_data, capture_output=True, timeout=15,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            if proc.returncode != 0:
-                _flog(f"[ASR] ffmpeg 错误: {proc.stderr.decode('utf-8', errors='replace')[:200]}")
-                self.error_occurred.emit("音频转码失败")
-                self._set_state(PipelineState.IDLE)
-                return
-
-            # 2. ASR
-            _flog(f"[ASR] 发送到 SenseVoice...")
-            text = self._transcribe(webm_file)
-            try:
-                os.unlink(webm_file)
-            except Exception:
-                pass
+            # 1. ASR
+            if self._whisper_model is not None:
+                _flog(f"[ASR] 使用 faster-whisper 本地识别...")
+                text = self._transcribe_pcm(pcm_data)
+            else:
+                # 回退：转 webm 发送到 SenseVoice
+                webm_file = os.path.join(tempfile.gettempdir(), f"cmd_{uuid.uuid4().hex}.webm")
+                proc = subprocess.run(
+                    ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self._sample_rate), "-ac", "1",
+                     "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k", webm_file],
+                    input=pcm_data, capture_output=True, timeout=15,
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                if proc.returncode != 0:
+                    _flog(f"[ASR] ffmpeg 错误: {proc.stderr.decode('utf-8', errors='replace')[:200]}")
+                    self.error_occurred.emit("音频转码失败")
+                    self._set_state(PipelineState.IDLE)
+                    return
+                _flog(f"[ASR] 发送到 SenseVoice...")
+                text = self._transcribe(webm_file)
+                try:
+                    os.unlink(webm_file)
+                except Exception:
+                    pass
 
             if not text:
                 _flog("[ASR] 无识别结果")
@@ -578,16 +624,16 @@ class VoicePipeline(QObject):
             self.command_captured.emit(text)
 
             # 3. 意图识别：Regex → LLM
-            intents = None
-            intent = parse_voice_command(text)
-            if intent:
-                intents = [intent]
-            else:
+            intents = parse_voice_command(text)
+            _flog(f"[意图] 正则结果: {intents}")
+            if not intents:
                 intents = self._llm_intent_detect(text)
+                _flog(f"[意图] LLM结果: {intents}")
             if intents:
-                _flog(f"[意图] 命中显示器控制: {intents}")
+                _flog(f"[意图] 命中显示器控制: {intents}, 类型: {type(intents)}")
                 replies = []
-                for it in intents:
+                for idx, it in enumerate(intents):
+                    _flog(f"[意图] 处理第{idx}个: {it}, 类型: {type(it)}")
                     reply = self._execute_display_control(it)
                     replies.append(reply)
                 full_reply = "，".join(replies)
@@ -645,21 +691,31 @@ class VoicePipeline(QObject):
 
     def _execute_display_control(self, intent):
         """执行显示器控制命令，返回 TTS 回复文字"""
-        action = intent["action"]
-        control = intent["control"]
+        _flog(f"[控制] 收到意图: {intent}, 类型: {type(intent)}")
+        if not isinstance(intent, dict):
+            _flog(f"[控制] 错误: intent不是dict, 而是{type(intent)}")
+            return f"意图格式错误: {intent}"
+        action = intent.get("action")
+        control = intent.get("control")
+        _flog(f"[控制] action={action}, control={control}")
 
-        # 读取 displayType
-        dt_resp = self._http_get_json("/config/displayType")
-        display_type = (dt_resp or {}).get("displayType", "native")
+        # 自动检测 DDC/CI 支持
+        ddcci_ok = False
+        if control in ("brightness", "contrast"):
+            try:
+                status = self._http_get_json("/ddcci/status")
+                ddcci_ok = (status or {}).get("supported", False)
+            except Exception:
+                pass
 
-        # 对比度需要 DDC/CI 支持
-        if control == "contrast" and display_type != "adb":
-            return "您好，当前显示器不支持DDC/CI，无法调节对比度。"
+        # 对比度必须有 DDC/CI
+        if control == "contrast" and not ddcci_ok:
+            return "当前显示器不支持DDC/CI，无法调节对比度。"
 
-        # 确定端点前缀
+        # 确定端点前缀：音量走 native，亮度/对比度优先 DDC/CI
         if control == "volume":
             prefix = "/native"
-        elif display_type == "adb":
+        elif ddcci_ok:
             prefix = "/ddcci"
         else:
             prefix = "/native"
@@ -696,15 +752,15 @@ class VoicePipeline(QObject):
 
         # 计算目标值
         if action == "set":
-            value = intent["value"]
+            value = intent.get("value", 50)
         else:  # adjust
             base = current if current is not None else 50
-            value = max(0, min(100, base + intent["delta"]))
+            value = max(0, min(100, base + intent.get("delta", 10)))
 
         # 执行
         endpoint = f"{prefix}/{control}"
         result = self._http_post_json(endpoint, {"value": value})
-        _flog(f"[控制] {control} → {value} (displayType={display_type})")
+        _flog(f"[控制] {control} → {value} (via {prefix})")
 
         # 构造 TTS 回复
         ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量"}.get(control, control)
@@ -715,26 +771,15 @@ class VoicePipeline(QObject):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n\n"
-                "规则：\n"
-                "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
-                "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
-                "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
-                "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
-                "语义理解（重要）：\n"
-                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -15\n"
-                "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +15\n"
-                "- \"太吵/炸耳朵/震耳朵/太大声\" → 音量过高，adjust volume -15\n"
-                "- \"听不清/听不见/太小声/比较低/小了\" → 音量过低，adjust volume +15\n"
-                "- \"闭嘴/安静/别吵了\" → 静音，set volume 0\n"
-                "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -15\n"
-                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度\"的抱怨或请求都算控制意图\n\n"
-                "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
-                "输出格式：\n"
-                "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15}\n"
-                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15},{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":15}]\n"
-                "没有控制意图：null\n"
-                "只输出JSON或null，不解释。\n\n"
+                "你是一个JSON生成器。用户的话可能包含调节亮度、音量或对比度的意图。\n"
+                "如果包含，输出一个JSON对象；如果不包含，输出null。\n\n"
+                "JSON对象格式：\n"
+                "{\"action\":\"set\",\"control\":\"brightness\",\"value\":60}\n"
+                "或：{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":-15}\n\n"
+                "action只能是set或adjust。\n"
+                "control只能是brightness、volume或contrast。\n"
+                "set用value，adjust用delta。\n\n"
+                "只输出JSON或null，不要其他文字。\n\n"
                 f"用户：{text}"
             )
             payload = json.dumps({
@@ -750,29 +795,49 @@ class VoicePipeline(QObject):
             data = json.loads(resp.read().decode("utf-8"))
             content = (data.get("message", {}) or {}).get("content", "").strip()
 
-            # 清理 think 标签
+            # 提取JSON：找第一个 { 或 [ 开始的内容
+            content = content.strip()
+            # 移除markdown代码块
             if "```" in content:
                 m = re.search(r'```(?:json)?\s*([\s\S]*?)```', content)
                 if m:
                     content = m.group(1).strip()
-            elif ">" in content and "{" in content:
-                m = re.search(r'(\{[\s\S]*\})', content)
+            # 找JSON对象或数组
+            if not content.startswith(("{", "[")):
+                m = re.search(r'(\{[\s\S]*\}|\[[\s\S]*\])', content)
                 if m:
                     content = m.group(1).strip()
 
             if content.lower() in ("null", "none", ""):
                 return None
 
-            parsed = json.loads(content)
-            # 支持单个意图或多个意图
-            if isinstance(parsed, dict) and "control" in parsed and "action" in parsed:
-                _flog(f"[意图LLM] 命中: {[parsed]}")
-                return [parsed]
-            elif isinstance(parsed, list):
-                intents = [i for i in parsed if isinstance(i, dict) and "control" in i and "action" in i]
-                if intents:
-                    _flog(f"[意图LLM] 命中: {intents}")
-                    return intents
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError:
+                _flog(f"[意图LLM] JSON解析失败: {content[:100]}")
+                return None
+
+            # 规范化为列表
+            if isinstance(parsed, dict):
+                parsed = [parsed]
+            if not isinstance(parsed, list):
+                return None
+
+            intents = []
+            for i in parsed:
+                if not isinstance(i, dict):
+                    continue
+                action = i.get("action")
+                control = i.get("control")
+                if action not in ("set", "adjust") or control not in ("brightness", "volume", "contrast"):
+                    continue
+                if "value" in i:
+                    intents.append({"action": action, "control": control, "value": int(i["value"])})
+                elif "delta" in i:
+                    intents.append({"action": action, "control": control, "delta": int(i["delta"])})
+            if intents:
+                _flog(f"[意图LLM] 命中: {intents}")
+                return intents
             return None
         except Exception as e:
             _flog(f"[意图LLM] 异常: {e}")
@@ -1070,6 +1135,27 @@ class VoicePipeline(QObject):
             self.error_occurred.emit(str(e))
             self._stop_tts_workers()
             self._set_state(PipelineState.IDLE)
+
+    def _transcribe_pcm(self, pcm_data):
+        """用 faster-whisper 识别 PCM int16 音频，返回文本"""
+        if self._whisper_model is None:
+            return ""
+        try:
+            # int16 PCM → float32
+            audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            # 音量归一化：防止削波导致识别失败
+            peak = np.max(np.abs(audio))
+            if peak > 0.01:
+                audio = audio * (0.9 / peak)
+            segments, _ = self._whisper_model.transcribe(
+                audio, language="zh", beam_size=5,
+                vad_filter=True, vad_parameters=dict(min_silence_duration_ms=300),
+            )
+            text = "".join(seg.text for seg in segments).strip()
+            return text
+        except Exception as e:
+            _flog(f"[ASR] faster-whisper 异常: {e}")
+            return ""
 
     def _transcribe(self, webm_file):
         """上传 webm 到 SenseVoice，返回文本"""

@@ -7,7 +7,7 @@ import os, sys, json, socket, subprocess, threading, struct
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
-OLLAMA_HOST = "192.168.1.32"
+OLLAMA_HOST = "localhost"
 OLLAMA_PORT = 11434
 _OLLAMA_CONFIG = {"host": OLLAMA_HOST, "port": OLLAMA_PORT}
 LISTEN_PORT = 18766
@@ -312,7 +312,7 @@ class Handler(BaseHTTPRequestHandler):
             content_len = int(self.headers.get("Content-Length", 0))
             if content_len > 0: body = json.loads(self.rfile.read(content_len))
         if endpoint == "ollama" and method == "POST":
-            host = body.get("host", ""); port = body.get("port", 11434); model = body.get("model", "qwen3-vl:4b")
+            host = body.get("host", ""); port = body.get("port", 11434); model = body.get("model", "qwen3:8b")
             _OLLAMA_CONFIG["host"] = host; _OLLAMA_CONFIG["port"] = int(port)
             _log(f"[Config] Ollama updated: {host}:{port} model={model}")
             self._send_json(200, {"success": True, "host": host, "port": port, "model": model})
@@ -436,6 +436,7 @@ class Handler(BaseHTTPRequestHandler):
         hPhys, err = Handler._get_physical_monitor()
         if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
         try:
+            from ctypes import windll
             dxva2 = windll.dxva2
             ret = dxva2.SetVCPFeature(hPhys, vcp_code, value)
             if ret:
@@ -452,6 +453,7 @@ class Handler(BaseHTTPRequestHandler):
         hPhys, err = Handler._get_physical_monitor()
         if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
         try:
+            from ctypes import windll
             dxva2 = windll.dxva2
             vct = c_ubyte(); cur = c_uint(); mx = c_uint()
             ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, vcp_code, byref(vct), byref(cur), byref(mx))
