@@ -649,6 +649,10 @@ class VoicePipeline(QObject):
         dt_resp = self._http_get_json("/config/displayType")
         display_type = (dt_resp or {}).get("displayType", "native")
 
+        # 对比度需要 DDC/CI 支持
+        if control == "contrast" and display_type != "adb":
+            return "您好，当前显示器不支持DDC/CI，无法调节对比度。"
+
         # 确定端点前缀
         if control == "volume":
             prefix = "/native"
