@@ -8,71 +8,15 @@ import numpy as np
 import sounddevice as sd
 
 from urllib.request import urlopen, Request
-from urllib.error import HTTPError
 from PySide6.QtCore import QObject, Signal
+from utils import _strip_md, _flog as _flog_shared
 
 # ── 日志 ─────────────────────────────────────────────────────────
 def _log(msg):
     print(f"[Pipeline] {msg}", file=sys.stderr, flush=True)
 
-_log_path = os.path.join(os.path.dirname(__file__), "widget.log")
-_log_file = open(_log_path, "a", encoding="utf-8")
-
 def _flog(msg):
-    ts = time.strftime("%H:%M:%S")
-    ms = int(time.time() * 1000) % 1000
-    line = f"{ts}.{ms:03d} {msg}"
-    _log_file.write(line + "\n")
-    _log_file.flush()
-    print(f"[Pipeline] {line}", file=sys.stderr, flush=True)
-
-
-# ── 文本清理 ─────────────────────────────────────────────────────
-def _strip_md(text):
-    """去掉 markdown 格式符号，保留纯文本内容供 TTS 朗读"""
-    if not text:
-        return text
-    s = text
-    # 代码块 ```...``` → 去掉
-    s = re.sub(r'```[\s\S]*?```', '', s)
-    # 行内代码 `...` → 保留内容
-    s = re.sub(r'`([^`]*)`', r'\1', s)
-    # 图片 ![alt](url) → alt
-    s = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', s)
-    # 链接 [text](url) → text
-    s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)
-    # 标题 # ## ### → 去掉 # 号
-    s = re.sub(r'^#{1,6}\s+', '', s, flags=re.MULTILINE)
-    # 加粗 **text** 或 __text__
-    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
-    s = re.sub(r'__(.+?)__', r'\1', s)
-    # 斜体 *text* 或 _text_
-    s = re.sub(r'\*(.+?)\*', r'\1', s)
-    s = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', s)
-    # 删除线 ~~text~~
-    s = re.sub(r'~~(.+?)~~', r'\1', s)
-    # 引用 > text
-    s = re.sub(r'^>\s?', '', s, flags=re.MULTILINE)
-    # 无序列表 - / * / +
-    s = re.sub(r'^[\s]*[-*+]\s+', '', s, flags=re.MULTILINE)
-    # 有序列表 1. 2.
-    s = re.sub(r'^[\s]*\d+\.\s+', '', s, flags=re.MULTILINE)
-    # 水平线 --- 或 *** 或 ___
-    s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
-    # 表格 | --- | --- |
-    s = re.sub(r'\|[\s\-:]+\|', '', s)
-    # 表格行 | text | text |
-    s = re.sub(r'\|', ' ', s)
-    # HTML 标签
-    s = re.sub(r'<[^>]+>', '', s)
-    # 多余空行
-    s = re.sub(r'\n{3,}', '\n\n', s)
-    # 去掉所有标点符号和特殊字符（TTS 不读）
-    s = re.sub(r'[，。！？；：、""''【】（）《》\-—…·「」『』〈〉〔〕｛｝‖｜\n]', ' ', s)
-    s = re.sub(r'[,.!?;:\'"()\[\]{}<>/\\@#$%^&*+=_~`|]', ' ', s)
-    # 多余空格
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
+    _flog_shared("[Pipeline]", msg)
 
 
 # ── 显示器控制意图识别 ───────────────────────────────────────────
@@ -258,6 +202,17 @@ class VoicePipeline(QObject):
         if self._state == PipelineState.SPEAKING:
             self._set_state(PipelineState.IDLE)
 
+    def speak_text(self, text):
+        """启动 TTS 朗读文本（封装 interrupt → notify → start workers → enqueue）"""
+        clean = _strip_md(text)
+        if not clean:
+            return
+        self._interrupted = False
+        self.notify_tts_start()
+        self._start_tts_workers()
+        self._sentence_queue.append(clean)
+        self._sentence_queue.append(None)
+
     # ── 打断功能 ─────────────────────────────────────────────────
     def _interrupt(self):
         """打断当前 TTS/LLM（非阻塞，立即返回）。不改状态，由调用方负责。"""
@@ -298,11 +253,10 @@ class VoicePipeline(QObject):
 
     def _load_models(self):
         """加载 VAD 模型"""
-        # Silero VAD
         try:
             _flog("[VAD] 加载 Silero VAD 模型...")
-            from silero_vad import load_silero_vad
-            self._vad_model = load_silero_vad(onnx=True)
+            from vad_engine import SileroVAD
+            self._vad_model = SileroVAD()
             _flog("[VAD] Silero VAD 加载完成")
         except Exception as e:
             _flog(f"[VAD] Silero VAD 加载失败: {e}，使用能量 VAD 回退")
@@ -466,10 +420,8 @@ class VoicePipeline(QObject):
         """获取 VAD 语音概率"""
         if self._vad_model is not None:
             try:
-                import torch
                 audio_float = chunk.astype(np.float32) / 32768.0
-                tensor = torch.from_numpy(audio_float)
-                prob = self._vad_model(tensor, self._sample_rate).item()
+                prob = self._vad_model(audio_float, self._sample_rate)
                 return prob
             except Exception as e:
                 _flog(f"[VAD] 推理异常: {e}")
@@ -595,13 +547,7 @@ class VoicePipeline(QObject):
                 self.ai_response_done.emit(full_reply)
                 # TTS 播放回复（检查是否静音）
                 if not self._tts_muted:
-                    self._interrupted = False
-                    self.notify_tts_start()
-                    self._start_tts_workers()
-                    clean = _strip_md(full_reply)
-                    if clean:
-                        self._sentence_queue.append(clean)
-                    self._sentence_queue.append(None)
+                    self.speak_text(full_reply)
                 else:
                     self._set_state(PipelineState.IDLE)
                 return
@@ -643,6 +589,36 @@ class VoicePipeline(QObject):
             _flog(f"[HTTP] POST {path} 失败: {e}")
             return None
 
+    @staticmethod
+    def _get_system_volume_obj():
+        """获取 pycaw 音量对象（确保 COM 已初始化）"""
+        import comtypes
+        comtypes.CoInitialize()
+        from pycaw.pycaw import AudioUtilities
+        speakers = AudioUtilities.GetSpeakers()
+        return speakers.EndpointVolume
+
+    def _get_system_volume(self):
+        """读取系统音量（0~100），失败返回 None"""
+        try:
+            vol = self._get_system_volume_obj()
+            return int(vol.GetMasterVolumeLevelScalar() * 100)
+        except Exception as e:
+            _flog(f"[音量] 读取失败: {e}")
+            return None
+
+    def _set_system_volume(self, value):
+        """设置系统音量（0~100），返回实际值，失败返回 None"""
+        try:
+            vol = self._get_system_volume_obj()
+            vol.SetMasterVolumeLevelScalar(value / 100.0, None)
+            actual = int(vol.GetMasterVolumeLevelScalar() * 100)
+            _flog(f"[音量] 设置 → {actual}%")
+            return actual
+        except Exception as e:
+            _flog(f"[音量] 设置失败: {e}")
+            return None
+
     def _execute_display_control(self, intent):
         """执行显示器控制命令，返回 TTS 回复文字"""
         action = intent["action"]
@@ -668,15 +644,10 @@ class VoicePipeline(QObject):
         current = None
         if action == "adjust":
             if control == "volume":
-                # 用 pycaw 读取实际系统音量（缓存可能过期）
-                try:
-                    from pycaw.pycaw import AudioUtilities
-                    speakers = AudioUtilities.GetSpeakers()
-                    vol = speakers.EndpointVolume
-                    current = int(vol.GetMasterVolumeLevelScalar() * 100)
+                current = self._get_system_volume()
+                if current is not None:
                     _flog(f"[控制] 实际音量: {current}%")
-                except Exception as e:
-                    _flog(f"[控制] pycaw 读取失败: {e}，使用缓存")
+                else:
                     r = self._http_get_json("/native/volume")
                     current = (r or {}).get("volume", 50)
             elif control == "brightness":
@@ -702,8 +673,16 @@ class VoicePipeline(QObject):
             value = max(0, min(100, base + intent["delta"]))
 
         # 执行
-        endpoint = f"{prefix}/{control}"
-        result = self._http_post_json(endpoint, {"value": value})
+        if control == "volume":
+            actual = self._set_system_volume(value)
+            if actual is not None:
+                value = actual
+            else:
+                endpoint = f"{prefix}/{control}"
+                self._http_post_json(endpoint, {"value": value})
+        else:
+            endpoint = f"{prefix}/{control}"
+            result = self._http_post_json(endpoint, {"value": value})
         _flog(f"[控制] {control} → {value} (displayType={display_type})")
 
         # 构造 TTS 回复

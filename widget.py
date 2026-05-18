@@ -3,28 +3,25 @@
 """
 Voice AI Widget — 圆形悬浮球变形为胶囊聊天面板 + 内嵌 HTTP 服务
 """
-import sys, os, json, time, threading, tempfile, uuid, wave, subprocess, asyncio, re
-import http.client
-import numpy as np
-import sounddevice as sd
+import sys, os, json, time, threading, subprocess, re
 from urllib.request import urlopen, Request
-from urllib.error import HTTPError
+import sounddevice as sd
 
 from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QScrollArea
-from PySide6.QtWidgets import QSizePolicy, QStackedWidget, QTextEdit, QFrame
+from PySide6.QtWidgets import QSizePolicy, QStackedWidget
 from PySide6.QtWidgets import QGraphicsOpacityEffect, QComboBox, QCheckBox
 from PySide6.QtCore import (Qt, QPropertyAnimation, QParallelAnimationGroup,
-                             QUrl, QSize, Property, QEasingCurve, QTimer,
-                             QSequentialAnimationGroup, QPoint, QRectF, QRect, Signal,
-                             QMetaObject, Q_ARG, Slot)
+                             QSize, QEasingCurve, QTimer,
+                             QPoint, QRect, Signal)
 from PySide6.QtGui import (QPainter, QColor, QBrush, QPen, QFont, QPixmap,
-                            QIcon, QCursor, QPainterPath, QFontMetrics, QTextOption)
-from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput
+                            QIcon, QCursor, QFontMetrics)
 
 SERVER_URL = "http://127.0.0.1:18766"
 
 from voice_pipeline import parse_voice_command
+from utils import _strip_md, _flog as _flog_shared, _log_path
+
 OLLAMA_URL = SERVER_URL + "/ollama"
 SENSEVOICE_URL = SERVER_URL + "/sensevoice/transcribe"
 TTS_URL = SERVER_URL + "/v1/audio/speech"
@@ -33,64 +30,8 @@ TTS_URL = SERVER_URL + "/v1/audio/speech"
 def _log(msg):
     print(f"[VoiceAI] {msg}", file=sys.stderr, flush=True)
 
-# ── 文件日志 ─────────────────────────────────────────────────
-_log_path = os.path.join(os.path.dirname(__file__), "widget.log")
-_log_file = open(_log_path, "a", encoding="utf-8")
-
 def _flog(msg):
-    ts = time.strftime("%H:%M:%S")
-    ms = int(time.time() * 1000) % 1000
-    line = f"{ts}.{ms:03d} {msg}"
-    _log_file.write(line + "\n")
-    _log_file.flush()
-    print(f"[VoiceAI] {line}", file=sys.stderr, flush=True)
-
-
-def _strip_md(text):
-    """去掉 markdown 格式符号，保留纯文本内容供 TTS 朗读"""
-    if not text:
-        return text
-    s = text
-    # 代码块 ```...``` → 去掉
-    s = re.sub(r'```[\s\S]*?```', '', s)
-    # 行内代码 `...` → 保留内容
-    s = re.sub(r'`([^`]*)`', r'\1', s)
-    # 图片 ![alt](url) → alt
-    s = re.sub(r'!\[([^\]]*)\]\([^)]*\)', r'\1', s)
-    # 链接 [text](url) → text
-    s = re.sub(r'\[([^\]]*)\]\([^)]*\)', r'\1', s)
-    # 标题 # ## ### → 去掉 # 号
-    s = re.sub(r'^#{1,6}\s+', '', s, flags=re.MULTILINE)
-    # 加粗 **text** 或 __text__
-    s = re.sub(r'\*\*(.+?)\*\*', r'\1', s)
-    s = re.sub(r'__(.+?)__', r'\1', s)
-    # 斜体 *text* 或 _text_
-    s = re.sub(r'\*(.+?)\*', r'\1', s)
-    s = re.sub(r'(?<!\w)_(.+?)_(?!\w)', r'\1', s)
-    # 删除线 ~~text~~
-    s = re.sub(r'~~(.+?)~~', r'\1', s)
-    # 引用 > text
-    s = re.sub(r'^>\s?', '', s, flags=re.MULTILINE)
-    # 无序列表 - / * / +
-    s = re.sub(r'^[\s]*[-*+]\s+', '', s, flags=re.MULTILINE)
-    # 有序列表 1. 2.
-    s = re.sub(r'^[\s]*\d+\.\s+', '', s, flags=re.MULTILINE)
-    # 水平线 --- 或 *** 或 ___
-    s = re.sub(r'^[-*_]{3,}\s*$', '', s, flags=re.MULTILINE)
-    # 表格 | 分隔符行
-    s = re.sub(r'^\|?[\s:]*-+[\s:]*(\|[\s:]*-+[\s:]*)*\|?\s*$', '', s, flags=re.MULTILINE)
-    # 表格行 → 去掉 |，保留文字
-    s = re.sub(r'\|\s*', ' ', s)
-    # HTML 标签
-    s = re.sub(r'<[^>]+>', '', s)
-    # 多余空行压缩
-    s = re.sub(r'\n{3,}', '\n\n', s)
-    # 去掉所有标点符号和特殊字符（TTS 不读）
-    s = re.sub(r'[，。！？；：、""''【】（）《》\-—…·「」『』〈〉〔〕｛｝‖｜\n]', ' ', s)
-    s = re.sub(r'[,.!?;:\'"()\[\]{}<>/\\@#$%^&*+=_~`|]', ' ', s)
-    # 多余空格
-    s = re.sub(r'\s+', ' ', s).strip()
-    return s
+    _flog_shared("[VoiceAI]", msg)
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1346,13 +1287,7 @@ class MainWidget(QWidget):
                 self.sig_done.emit(reply)
                 # TTS 播放回复
                 if self._pipeline:
-                    clean = _strip_md(reply)
-                    if clean:
-                        self._pipeline._interrupted = False
-                        self._pipeline.notify_tts_start()
-                        self._pipeline._start_tts_workers()
-                        self._pipeline._sentence_queue.append(clean)
-                        self._pipeline._sentence_queue.append(None)
+                    self._pipeline.speak_text(reply)
             except Exception as e:
                 self.sig_error.emit(str(e))
         threading.Thread(target=_do, daemon=True).start()
@@ -1372,13 +1307,7 @@ class MainWidget(QWidget):
             self.sig_done.emit(full_reply)
             # TTS 播放回复
             if self._pipeline:
-                clean = _strip_md(full_reply)
-                if clean:
-                    self._pipeline._interrupted = False
-                    self._pipeline.notify_tts_start()
-                    self._pipeline._start_tts_workers()
-                    self._pipeline._sentence_queue.append(clean)
-                    self._pipeline._sentence_queue.append(None)
+                self._pipeline.speak_text(full_reply)
         except Exception as e:
             self.sig_error.emit(str(e))
 
@@ -1539,16 +1468,11 @@ class MainWidget(QWidget):
             self._panel.status_lbl.setText("没有可朗读的内容")
             return
         if self._pipeline:
-            # 清理文本：去掉 markdown 和标点符号
             clean = _strip_md(self._last_ai_text)
             if not clean:
                 self._panel.status_lbl.setText("没有可朗读的内容")
                 return
-            self._pipeline._interrupted = False
-            self._pipeline.notify_tts_start()
-            self._pipeline._start_tts_workers()
-            self._pipeline._sentence_queue.append(clean)
-            self._pipeline._sentence_queue.append(None)  # 结束信号
+            self._pipeline.speak_text(clean)
 
     def _stop_tts(self):
         """停止当前 TTS 播放"""

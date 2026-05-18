@@ -36,7 +36,8 @@
       "Bash(taskkill /F /IM VoiceAI.exe)",
       "Bash(taskkill /F /PID 29660)",
       "Bash(taskkill /F /PID 10716)",
-      "Bash(cmd.exe /c \"taskkill /F /IM VoiceAI.exe\")"
+      "Bash(cmd.exe /c \"taskkill /F /IM VoiceAI.exe\")",
+      "Bash(dist/VoiceAI.exe)"
     ]
   }
 }

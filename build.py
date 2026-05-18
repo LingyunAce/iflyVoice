@@ -18,13 +18,14 @@ for d in [DIST_DIR, BUILD_DIR]:
 
 src = os.path.abspath("server.py")
 static = os.path.abspath("embedded_static.py")
+vad_onnx = os.path.abspath("silero_vad.onnx")
 EXCLUDES = [
     # 大包，项目不依赖
     "cv2", "opencv-python",
     "scipy", "pandas", "sklearn", "scikit-learn",
     "matplotlib", "PIL", "Pillow",
     "llvmlite", "numba",
-    "onnxruntime",
+    "torch", "silero_vad",
     "av", "av.libs",
     "ctranslate2",
     "py_mini_racer",
@@ -40,7 +41,7 @@ EXCLUDES = [
     "jupyter", "notebook",
     "pytest", "unittest",
     "setuptools", "distutils", "pkg_resources",
-    "comtypes", "pythoncom", "win32com",
+    "win32com",
     "qtpy",
     "rich", "pygments",
 ]
@@ -55,6 +56,7 @@ cmd = [
     "--clean",
     "--add-data", f"{src};.",
     "--add-data", f"{static};.",
+    "--add-data", f"{vad_onnx};.",
 ]
 for mod in EXCLUDES:
     cmd += ["--exclude-module", mod]
