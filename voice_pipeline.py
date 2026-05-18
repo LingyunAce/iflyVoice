@@ -27,7 +27,8 @@ def parse_voice_command(text):
     t = text.lower().strip()
 
     # ── 亮度 ──
-    m = re.search(r'(?:把\s*)?亮度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?', t)
+    # set: "亮度调到50"、"亮度调高到50"、"亮度设为50"
+    m = re.search(r'(?:把\s*)?亮度\s*(?:调|设)(?:高|大|亮|低|小|暗)?(?:成|为|到|整?到)\s*(\d{1,3})%?', t)
     if not m:
         m = re.search(r'(?:亮度|屏幕)\s*[:：]?\s*(\d{1,3})%?', t)
     if m:
@@ -37,7 +38,7 @@ def parse_voice_command(text):
         return {"action": "set", "control": "brightness", "value": 100}
     if re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小|最暗)', t):
         return {"action": "set", "control": "brightness", "value": 0}
-    # 带数值的相对调整："亮度调高40" → delta +40
+    # adjust: "亮度调高40" → delta +40（不含"到"）
     m = re.search(r'(?:亮度|屏幕)\s*(?:调|设)?(?:高|大|亮)\s*(\d{1,3})', t)
     if m:
         return {"action": "adjust", "control": "brightness", "delta": int(m.group(1))}
@@ -50,7 +51,7 @@ def parse_voice_command(text):
         return {"action": "adjust", "control": "brightness", "delta": -10}
 
     # ── 对比度 ──
-    m = re.search(r'(?:把\s*)?对比度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?', t)
+    m = re.search(r'(?:把\s*)?对比度\s*(?:调|设)(?:高|大|低|小)?(?:成|为|到|整?到)\s*(\d{1,3})%?', t)
     if m:
         return {"action": "set", "control": "contrast", "value": int(m.group(1))}
 
@@ -70,7 +71,8 @@ def parse_voice_command(text):
         return {"action": "adjust", "control": "contrast", "delta": -10}
 
     # ── 音量 ──
-    m = re.search(r'(?:把\s*)?音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?', t)
+    # set: "音量调到50"、"音量调高到50"、"音量设为50"
+    m = re.search(r'(?:把\s*)?音量\s*(?:调|设)(?:高|大|低|小)?(?:成|为|到)\s*(\d{1,3})%?', t)
     if m:
         return {"action": "set", "control": "volume", "value": int(m.group(1))}
 
@@ -602,7 +604,7 @@ class VoicePipeline(QObject):
         """读取系统音量（0~100），失败返回 None"""
         try:
             vol = self._get_system_volume_obj()
-            return int(vol.GetMasterVolumeLevelScalar() * 100)
+            return round(vol.GetMasterVolumeLevelScalar() * 100)
         except Exception as e:
             _flog(f"[音量] 读取失败: {e}")
             return None
@@ -612,7 +614,7 @@ class VoicePipeline(QObject):
         try:
             vol = self._get_system_volume_obj()
             vol.SetMasterVolumeLevelScalar(value / 100.0, None)
-            actual = int(vol.GetMasterVolumeLevelScalar() * 100)
+            actual = round(vol.GetMasterVolumeLevelScalar() * 100)
             _flog(f"[音量] 设置 → {actual}%")
             return actual
         except Exception as e:
@@ -701,17 +703,17 @@ class VoicePipeline(QObject):
                 "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
                 "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
                 "语义理解（重要）：\n"
-                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -15\n"
-                "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +15\n"
-                "- \"太吵/炸耳朵/震耳朵/太大声\" → 音量过高，adjust volume -15\n"
-                "- \"听不清/听不见/太小声/比较低/小了\" → 音量过低，adjust volume +15\n"
+                "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -10\n"
+                "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +10\n"
+                "- \"太吵/炸耳朵/震耳朵/太大声\" → 音量过高，adjust volume -10\n"
+                "- \"听不清/听不见/太小声/比较低/小了\" → 音量过低，adjust volume +10\n"
                 "- \"闭嘴/安静/别吵了\" → 静音，set volume 0\n"
-                "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -15\n"
+                "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -10\n"
                 "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度\"的抱怨或请求都算控制意图\n\n"
                 "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
                 "输出格式：\n"
-                "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15}\n"
-                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":15},{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":15}]\n"
+                "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"
+                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10},{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":10}]\n"
                 "没有控制意图：null\n"
                 "只输出JSON或null，不解释。\n\n"
                 f"用户：{text}"
