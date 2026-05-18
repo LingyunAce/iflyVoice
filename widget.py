@@ -671,7 +671,7 @@ class SettingsDialog(QWidget):
         super().__init__(parent)
         self._main = main_widget
         self.setWindowTitle("设置")
-        self.setFixedSize(360, 350)
+        self.setFixedSize(360, 385)
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.setAttribute(Qt.WA_TranslucentBackground)
 
@@ -686,6 +686,7 @@ class SettingsDialog(QWidget):
         default = {
             "mic_device": "",
             "mute_tts": False,
+            "wake_word": "小助手",
             "audio_url": "http://192.168.1.32:9997",
             "ollama_url": "http://192.168.1.32:11434",
             "ollama_model": "qwen3-vl:4b",
@@ -791,7 +792,14 @@ class SettingsDialog(QWidget):
         self._mute_cb = QCheckBox("禁止自动朗读（TTS）")
         ml.addWidget(self._mute_cb)
 
-        # 3. Audio 服务 URL
+        # 3. 唤醒词
+        ml.addWidget(QLabel("唤醒词"))
+        self._wake_word_edit = QLineEdit()
+        self._wake_word_edit.setFixedHeight(26)
+        self._wake_word_edit.setPlaceholderText("小助手")
+        ml.addWidget(self._wake_word_edit)
+
+        # 4. Audio 服务 URL
         ml.addWidget(QLabel("Audio 服务 URL"))
         self._audio_url_edit = QLineEdit()
         self._audio_url_edit.setFixedHeight(26)
@@ -865,6 +873,8 @@ class SettingsDialog(QWidget):
             self._mic_combo.setCurrentIndex(idx)
         # 静音
         self._mute_cb.setChecked(self._config.get("mute_tts", False))
+        # 唤醒词
+        self._wake_word_edit.setText(self._config.get("wake_word", "小助手"))
         # URL
         self._audio_url_edit.setText(self._config.get("audio_url", SERVER_URL))
         self._ollama_url_edit.setText(self._config.get("ollama_url", SERVER_URL))
@@ -878,6 +888,7 @@ class SettingsDialog(QWidget):
     def _on_save(self):
         self._config["mic_device"] = self._mic_combo.currentData() or ""
         self._config["mute_tts"] = self._mute_cb.isChecked()
+        self._config["wake_word"] = self._wake_word_edit.text().strip() or "小助手"
         self._config["audio_url"] = self._audio_url_edit.text().strip() or SERVER_URL
         self._config["ollama_url"] = self._ollama_url_edit.text().strip() or SERVER_URL
         self._config["ollama_model"] = self._ollama_model_combo.currentText() or "qwen3-vl:4b"
@@ -890,11 +901,12 @@ class SettingsDialog(QWidget):
         # TTS 静音
         mute = self._config.get("mute_tts", False)
         self._main._tts_muted = mute
-        # Pipeline 麦克风设备 + 模型 + 静音
+        # Pipeline 麦克风设备 + 模型 + 静音 + 唤醒词
         if self._main._pipeline:
             self._main._pipeline._mic_device = self._config.get("mic_device", None)
             self._main._pipeline._model = self._config.get("ollama_model", "qwen3-vl:4b")
             self._main._pipeline._tts_muted = mute
+            self._main._pipeline._wake_word = self._config.get("wake_word", "小助手")
 
     def showEvent(self, event):
         """每次显示时重新加载配置，丢弃未保存的修改"""
@@ -1099,7 +1111,7 @@ class MainWidget(QWidget):
         self._panel.input_box.setFocus()
         if not self._greeting_shown:
             self._greeting_shown = True
-            self._panel.add_bubble("您好，我是您的AI助手，我能帮您调节亮度、对比度、音量等，有什么需求我可以帮您？", False)
+            self._panel.add_bubble("您好，我是您的AI助手，我能帮您调节亮度、对比度、音量等，您可以跟我说“小助手，帮我把亮度调高一些”。", False)
 
     def _collapse(self):
         if not self._expanded:

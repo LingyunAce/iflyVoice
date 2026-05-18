@@ -477,10 +477,13 @@ class VoicePipeline(QObject):
             if wake_lower in text_lower:
                 return True
 
-            # ASR 可能漏掉"小"字，回退检查"助手"
-            if wake_lower.startswith("小") and "助手" in text_lower:
-                _flog(f"[唤醒] 回退匹配'助手'")
-                return True
+            # ASR 可能漏字/错字，回退：检查唤醒词的连续子串（至少 2 字）
+            for length in range(len(wake_lower), 1, -1):
+                for i in range(len(wake_lower) - length + 1):
+                    sub = wake_lower[i:i + length]
+                    if len(sub) >= 2 and sub in text_lower:
+                        _flog(f"[唤醒] 子串匹配'{sub}'")
+                        return True
 
             return False
 
