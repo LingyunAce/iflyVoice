@@ -888,11 +888,19 @@ class SettingsDialog(QWidget):
     def _apply_to_main(self):
         """将配置应用到 MainWidget 和 Pipeline"""
         # TTS 静音
-        self._main._tts_muted = self._config.get("mute_tts", False)
-        # Pipeline 麦克风设备 + 模型
+        mute = self._config.get("mute_tts", False)
+        self._main._tts_muted = mute
+        # Pipeline 麦克风设备 + 模型 + 静音
         if self._main._pipeline:
             self._main._pipeline._mic_device = self._config.get("mic_device", None)
             self._main._pipeline._model = self._config.get("ollama_model", "qwen3-vl:4b")
+            self._main._pipeline._tts_muted = mute
+
+    def showEvent(self, event):
+        """每次显示时重新加载配置，丢弃未保存的修改"""
+        self._config = self._load_config()
+        self._apply_config()
+        super().showEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -947,8 +955,9 @@ class MainWidget(QWidget):
         self._tts_playing = False   # TTS 是否正在播放
         self._pipeline = pipeline
 
-        # 设置对话框
+        # 设置对话框（加载已保存的配置并应用）
         self._settings_dialog = SettingsDialog(self)
+        self._settings_dialog._apply_to_main()
 
         self._flush_timer = QTimer(self)
         self._flush_timer.setInterval(150)
@@ -1286,7 +1295,7 @@ class MainWidget(QWidget):
                 self.sig_stream.emit(reply)
                 self.sig_done.emit(reply)
                 # TTS 播放回复
-                if self._pipeline:
+                if self._pipeline and not self._tts_muted:
                     self._pipeline.speak_text(reply)
             except Exception as e:
                 self.sig_error.emit(str(e))
@@ -1306,7 +1315,7 @@ class MainWidget(QWidget):
             self.sig_stream.emit(full_reply)
             self.sig_done.emit(full_reply)
             # TTS 播放回复
-            if self._pipeline:
+            if self._pipeline and not self._tts_muted:
                 self._pipeline.speak_text(full_reply)
         except Exception as e:
             self.sig_error.emit(str(e))
