@@ -1111,7 +1111,7 @@ class MainWidget(QWidget):
         self._panel.input_box.setFocus()
         if not self._greeting_shown:
             self._greeting_shown = True
-            self._panel.add_bubble("您好，我是您的AI助手，我能帮您调节亮度、对比度、音量等，您可以跟我说“小助手，帮我把亮度调高一些”。", False)
+            self._panel.add_bubble('您好，我是您的AI助手，我能帮您调节亮度、对比度、音量、色温等，您可以跟我说”小助手，帮我把亮度调高一些”。', False)
 
     def _collapse(self):
         if not self._expanded:

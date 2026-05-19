@@ -293,6 +293,8 @@ class Handler(BaseHTTPRequestHandler):
             "brightness":    ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x10, "brightness")),
             "contrast":      ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x12, "contrast")),
             "contrast_read": ("GET",  lambda: self._ddcci_get_vcp(0x12, "contrast")),
+            "color_temp":    ("POST", lambda b=body: self._ddcci_set_color_temp(b)),
+            "monitor_count": ("GET",  lambda: self._ddcci_monitor_count()),
         }
         if endpoint not in handlers:
             return self._send_json(404, {"success": False, "error": f"Unknown DDC/CI endpoint: {endpoint}"})
@@ -385,27 +387,53 @@ class Handler(BaseHTTPRequestHandler):
         handles = [int(p.handle) for p in phys_arr]
         _log(f"[DDC/CI] 发现 {len(handles)} 个物理监视器: {', '.join(hex(h) for h in handles)}")
 
-        for idx, hPhys in enumerate(handles):
+        descs = [p.description.strip() for p in phys_arr]
+        for idx, (hPhys, desc) in enumerate(zip(handles, descs)):
             vct = c_ubyte(); cur = c_uint(); mx = c_uint()
             try:
                 ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x00, byref(vct), byref(cur), byref(mx))
                 if ret:
                     mid = "0x%04X" % cur.value
-                    _log(f"[DDC/CI] OK PhysMon#{idx} Handle={hex(hPhys)} MfgID={mid} SELECTED")
-                    return hPhys, None
+                    name = desc if desc else f"显示器({mid})"
+                    _log(f"[DDC/CI] OK PhysMon#{idx} Handle={hex(hPhys)} MfgID={mid} Desc='{desc}' SELECTED")
+                    return hPhys, name, None
             except Exception as e: _log(f"[DDC/CI] X PhysMon#{idx} Handle={hex(hPhys)} VCP0x00 err={e}")
-        for idx, hPhys in enumerate(handles):
+        for idx, (hPhys, desc) in enumerate(zip(handles, descs)):
             vct = c_ubyte(); cur = c_uint(); mx = c_uint()
             try:
                 ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x10, byref(vct), byref(cur), byref(mx))
                 if ret:
+                    name = desc if desc else f"外置显示器"
                     _log(f"[DDC/CI] OK PhysMon#{idx} Handle={hex(hPhys)} Brightness={cur.value} (VCP 0x10 fallback) SELECTED")
-                    return hPhys, None
+                    return hPhys, name, None
             except Exception as e: _log(f"[DDC/CI] X PhysMon#{idx} Handle={hex(hPhys)} VCP0x10 err={e}")
-        return None, f"All {len(handles)} phys-mon tested, none support DDC/CI"
+        return None, None, f"All {len(handles)} phys-mon tested, none support DDC/CI"
+
+    def _ddcci_monitor_count(self):
+        """返回 DDC/CI 可用的物理监视器数量"""
+        import ctypes
+        from ctypes import windll, byref, c_uint, c_ulong, Structure, POINTER, WINFUNCTYPE
+        class PHYSICAL_MONITOR(Structure):
+            _fields_ = [("handle", c_ulong), ("description", ctypes.c_wchar * 128)]
+        class RECT(Structure):
+            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+        total = 0
+        user32 = windll.user32; dxva2 = windll.dxva2
+        _found = []
+        cb_type = WINFUNCTYPE(c_uint, c_ulong, c_ulong, POINTER(RECT), c_uint)
+        def _enum_cb(hm, hdc, lprect, lparam): _found.append(hm); return 1
+        user32.EnumDisplayMonitors(0, None, cb_type(_enum_cb), 0)
+
+        for hmon in _found:
+            num_phys = c_uint()
+            if dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, byref(num_phys)):
+                total += num_phys.value
+
+        self._send_json(200, {"count": total})
 
     def _ddcci_status(self):
-        hPhys, err = Handler._get_physical_monitor()
+        hPhys, mon_name, err = Handler._get_physical_monitor()
         if hPhys is None:
             return self._send_json(200, {"connected": False, "supported": False, "reason": err or "无法获取物理显示器句柄"})
         import ctypes
@@ -416,13 +444,13 @@ class Handler(BaseHTTPRequestHandler):
             ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x00, byref(vct), byref(cur_val), byref(max_val))
             if ret:
                 mid_hex = f"0x{cur_val.value:04X}"
-                _log(f"[DDC/CI] ✓ ManufacturerID={mid_hex}")
-                self._send_json(200, {"connected": True, "supported": True, "manufacturerId": mid_hex})
+                _log(f"[DDC/CI] ✓ ManufacturerID={mid_hex} Name='{mon_name}'")
+                self._send_json(200, {"connected": True, "supported": True, "manufacturerId": mid_hex, "monitorName": mon_name or ""})
             else:
                 ret2 = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x10, byref(c_ubyte()), byref(c_uint()), byref(c_uint()))
                 if ret2:
                     _log("[DDC/CI] ✓ VCP brightness readable")
-                    self._send_json(200, {"connected": True, "supported": True, "detail": "VCP brightness readable"})
+                    self._send_json(200, {"connected": True, "supported": True, "detail": "VCP brightness readable", "monitorName": mon_name or ""})
                 else:
                     _log("[DDC/CI] ✗ DDC/CI no response")
                     self._send_json(200, {"connected": True, "supported": False, "reason": "DDC/CI no response"})
@@ -433,14 +461,15 @@ class Handler(BaseHTTPRequestHandler):
     def _ddcci_set_vcp(self, body, vcp_code, control_name):
         value = int(body.get("value", 50))
         value = max(0, min(100, value))
-        hPhys, err = Handler._get_physical_monitor()
+        hPhys, mon_name, err = Handler._get_physical_monitor()
         if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
         try:
+            from ctypes import windll
             dxva2 = windll.dxva2
             ret = dxva2.SetVCPFeature(hPhys, vcp_code, value)
             if ret:
-                _log(f"[DDC/CI] ✓ SetVCPFeature 0x{vcp_code:02X}({control_name})={value}%")
-                self._send_json(200, {"success": True, control_name: value, "vcpCode": f"0x{vcp_code:02X}"})
+                _log(f"[DDC/CI] ✓ SetVCPFeature 0x{vcp_code:02X}({control_name})={value}% monitor='{mon_name}'")
+                self._send_json(200, {"success": True, control_name: value, "vcpCode": f"0x{vcp_code:02X}", "monitorName": mon_name or ""})
             else:
                 _log(f"[DDC/CI] ✗ SetVCPFeature 0x{vcp_code:02X}({control_name})={value} failed")
                 self._send_json(200, {"success": False, "error": f"SetVCPFeature 0x{vcp_code:02X} failed"})
@@ -449,18 +478,41 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _ddcci_get_vcp(self, vcp_code, control_name):
-        hPhys, err = Handler._get_physical_monitor()
+        hPhys, mon_name, err = Handler._get_physical_monitor()
         if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
         try:
+            from ctypes import windll
             dxva2 = windll.dxva2
             vct = c_ubyte(); cur = c_uint(); mx = c_uint()
             ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, vcp_code, byref(vct), byref(cur), byref(mx))
             if ret:
-                self._send_json(200, {"success": True, control_name: int(cur.value), "max": int(mx.value), "vcpCode": f"0x{vcp_code:02X}"})
+                self._send_json(200, {"success": True, control_name: int(cur.value), "max": int(mx.value), "vcpCode": f"0x{vcp_code:02X}", "monitorName": mon_name or ""})
             else:
                 self._send_json(200, {"success": False, "error": f"VCP 0x{vcp_code:02X} read failed"})
         except Exception as e:
             _log(f"[DDC/CI] GetVCP 0x{vcp_code:02X} 异常: {e}")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _ddcci_set_color_temp(self, body):
+        """DDC/CI 色温设置，VCP 0x14，值 0-100 映射到 3000K-10000K"""
+        value = int(body.get("value", 50))
+        value = max(0, min(100, value))
+        hPhys, mon_name, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
+        try:
+            from ctypes import windll
+            dxva2 = windll.dxva2
+            ret = dxva2.SetVCPFeature(hPhys, 0x14, value)
+            if ret:
+                kelvin = 3000 + int(value * 70)
+                _log(f"[DDC/CI] ✓ SetVCPFeature 0x14(color_temp)={value}% (~{kelvin}K) monitor='{mon_name}'")
+                self._send_json(200, {"success": True, "colorTemp": value, "kelvin": kelvin, "vcpCode": "0x14", "monitorName": mon_name or ""})
+            else:
+                _log(f"[DDC/CI] ✗ SetVCPFeature 0x14(color_temp)={value} failed")
+                self._send_json(200, {"success": False, "error": "SetVCPFeature 0x14 failed，当前显示器可能不支持DDC/CI色温调节"})
+        except Exception as e:
+            import traceback; _log(f"[DDC/CI] color_temp 异常: {e}\n{traceback.format_exc()}\n")
             self._send_json(500, {"success": False, "error": str(e)})
 
     SENSEVOICE_CONFIG = {"base_url": "http://192.168.1.32:9997", "api_key": "sk-86ccca26e58a8", "model": "SenseVoiceSmall"}
@@ -574,7 +626,10 @@ class Handler(BaseHTTPRequestHandler):
                                      creationflags=subprocess.CREATE_NO_WINDOW)
             output = result.stdout.strip()
             if output:
-                import json as _json; data = _json.loads(output); self._send_json(200, data)
+                import json as _json; data = _json.loads(output)
+                with Handler._state_lock:
+                    data["colorTemp"] = Handler._native_state.get("colorTemp", 50)
+                self._send_json(200, data)
             else: self._send_json(200, {"connected": False, "error": "No WMI result"})
         except Exception as e: self._send_json(200, {"connected": False, "error": str(e)})
 

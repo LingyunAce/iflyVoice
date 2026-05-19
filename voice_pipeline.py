@@ -70,6 +70,36 @@ def parse_voice_command(text):
     if re.search(r'对比度.*(?:调低|降低|减小|减弱|减少|低一点|低一些)', t):
         return {"action": "adjust", "control": "contrast", "delta": -10}
 
+    # ── 色温 ──
+    # set: "色温调到50"、"色温设为60"
+    m = re.search(r'(?:把\s*)?色温\s*(?:调|设)(?:高|大|低|小)?(?:成|为|到|整?到)\s*(\d{1,3})%?', t)
+    if not m:
+        m = re.search(r'色温\s*[:：]?\s*(\d{1,3})%?', t)
+    if m:
+        return {"action": "set", "control": "color_temp", "value": int(m.group(1))}
+
+    # 色温暖/冷/偏暖/偏冷
+    if re.search(r'色温.*(?:最暖|最黄|暖色)', t):
+        return {"action": "set", "control": "color_temp", "value": 0}
+    if re.search(r'色温.*(?:最冷|最蓝|冷色)', t):
+        return {"action": "set", "control": "color_temp", "value": 100}
+    if re.search(r'色温.*(?:中性|正常|标准|默认)', t):
+        return {"action": "set", "control": "color_temp", "value": 50}
+
+    # adjust: "色温调高30" → delta +30
+    m = re.search(r'色温\s*(?:调|设)?(?:高|大|冷)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "color_temp", "delta": int(m.group(1))}
+    m = re.search(r'色温\s*(?:调|设)?(?:低|小|暖)\s*(\d{1,3})', t)
+    if m:
+        return {"action": "adjust", "control": "color_temp", "delta": -int(m.group(1))}
+
+    # 色温偏暖/偏冷（无数字，±10）
+    if re.search(r'色温.*(?:调高|提高|升高|冷一点|冷一些|偏冷|再冷)', t):
+        return {"action": "adjust", "control": "color_temp", "delta": 10}
+    if re.search(r'色温.*(?:调低|降低|暖一点|暖一些|偏暖|再暖|黄一点)', t):
+        return {"action": "adjust", "control": "color_temp", "delta": -10}
+
     # ── 音量 ──
     # set: "音量调到50"、"音量调高到50"、"音量设为50"
     m = re.search(r'(?:把\s*)?音量\s*(?:调|设)(?:高|大|低|小)?(?:成|为|到)\s*(\d{1,3})%?', t)
@@ -594,6 +624,16 @@ class VoicePipeline(QObject):
             _flog(f"[HTTP] POST {path} 失败: {e}")
             return None
 
+    def _count_monitors(self):
+        """返回 DDC/CI 物理监视器数量"""
+        try:
+            r = self._http_get_json("/ddcci/monitor_count")
+            if r and r.get("count"):
+                return r["count"]
+        except Exception:
+            pass
+        return 1
+
     @staticmethod
     def _get_system_volume_obj():
         """获取 pycaw 音量对象（确保 COM 已初始化）"""
@@ -633,13 +673,12 @@ class VoicePipeline(QObject):
         dt_resp = self._http_get_json("/config/displayType")
         display_type = (dt_resp or {}).get("displayType", "native")
 
-        # 对比度需要 DDC/CI 支持
-        if control == "contrast" and display_type != "adb":
-            return "您好，当前显示器不支持DDC/CI，无法调节对比度。"
-
         # 确定端点前缀
         if control == "volume":
             prefix = "/native"
+        elif control in ("contrast", "color_temp"):
+            # 对比度和色温优先走 DDC/CI（硬件控制），不依赖 displayType 配置
+            prefix = "/ddcci"
         elif display_type == "adb":
             prefix = "/ddcci"
         else:
@@ -663,12 +702,11 @@ class VoicePipeline(QObject):
                     r = self._http_get_json("/native/status")
                     current = (r or {}).get("brightness", 50)
             elif control == "contrast":
-                if prefix == "/ddcci":
-                    r = self._http_get_json("/ddcci/contrast_read")
-                    current = (r or {}).get("value", 50)
-                else:
-                    r = self._http_get_json("/native/status")
-                    current = (r or {}).get("contrast", 50)
+                r = self._http_get_json("/ddcci/contrast_read")
+                current = (r or {}).get("value", 50)
+            elif control == "color_temp":
+                r = self._http_get_json("/native/status")
+                current = (r or {}).get("colorTemp", 50)
 
         # 计算目标值
         if action == "set":
@@ -678,6 +716,7 @@ class VoicePipeline(QObject):
             value = max(0, min(100, base + intent["delta"]))
 
         # 执行
+        mon_name = ""
         if control == "volume":
             actual = self._set_system_volume(value)
             if actual is not None:
@@ -688,18 +727,28 @@ class VoicePipeline(QObject):
         else:
             endpoint = f"{prefix}/{control}"
             result = self._http_post_json(endpoint, {"value": value})
-        _flog(f"[控制] {control} → {value} (displayType={display_type})")
+            if isinstance(result, dict):
+                mon_name = result.get("monitorName", "")
+                # DDC/CI 失败时返回提示
+                if prefix == "/ddcci" and not result.get("success", True):
+                    ctrl_name = {"contrast": "对比度", "color_temp": "色温"}.get(control, control)
+                    return f"当前显示器不支持DDC/CI{ctrl_name}调节。"
+        _flog(f"[控制] {control} → {value} (displayType={display_type}, monitor='{mon_name}')")
 
         # 构造 TTS 回复
-        ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量"}.get(control, control)
-        reply = f"好的，已将{ctrl_name}设为{value}%"
+        ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量", "color_temp": "色温"}.get(control, control)
+        # 多显示器时才在回复中说明是哪个显示器
+        if mon_name and self._count_monitors() > 1:
+            reply = f"好的，已将{mon_name}的{ctrl_name}设为{value}%"
+        else:
+            reply = f"好的，已将{ctrl_name}设为{value}%"
         return reply
 
     def _llm_intent_detect(self, text):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度控制意图。\n\n"
+                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温控制意图。\n\n"
                 "规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
@@ -712,7 +761,9 @@ class VoicePipeline(QObject):
                 "- \"听不清/听不见/太小声/比较低/小了\" → 音量过低，adjust volume +10\n"
                 "- \"闭嘴/安静/别吵了\" → 静音，set volume 0\n"
                 "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -10\n"
-                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度\"的抱怨或请求都算控制意图\n\n"
+                "- \"太冷/偏冷/太蓝\" → 色温过高，adjust color_temp -10\n"
+                "- \"太暖/偏暖/太黄\" → 色温过低，adjust color_temp +10\n"
+                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度/色温\"的抱怨或请求都算控制意图\n\n"
                 "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
                 "输出格式：\n"
                 "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"
