@@ -60,6 +60,7 @@ cmd = [
 ]
 for mod in EXCLUDES:
     cmd += ["--exclude-module", mod]
+cmd += ["--hidden-import", "reshade_inject.launcher"]
 cmd.append("widget.py")
 print("Running PyInstaller...")
 r = subprocess.run(cmd)

@@ -8,6 +8,14 @@ import numpy as np
 import sounddevice as sd
 
 from urllib.request import urlopen, Request
+
+# ── Reshade 注入器（延迟导入，打包时不进 EXCLUDES）──────────────────────────
+try:
+    import reshade_inject.launcher as rdx_inject
+    _RESHADE_INJECTOR_AVAILABLE = True
+except ImportError:
+    _RESHADE_INJECTOR_AVAILABLE = False
+    rdx_inject = None
 from PySide6.QtCore import QObject, Signal
 from utils import _strip_md, _flog as _flog_shared
 
@@ -120,6 +128,13 @@ def parse_voice_command(text):
         return {"action": "adjust", "control": "volume", "delta": 10}
     if re.search(r'音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)', t):
         return {"action": "adjust", "control": "volume", "delta": -10}
+
+
+    # ── 一键 HDR ──
+    if re.search(r'(?:开启?|启动|打开?|应用?)(?:HDR|hdr|one.?key|一键)', t):
+        return {"action": "set", "control": "hdr_onekey", "value": 0}
+    if re.search(r'(?:关闭?|停用|禁用)(?:HDR|hdr)', t):
+        return {"action": "set", "control": "hdr_off", "value": 0}
 
     return None
 
@@ -727,13 +742,77 @@ class VoicePipeline(QObject):
         else:
             endpoint = f"{prefix}/{control}"
             result = self._http_post_json(endpoint, {"value": value})
-            if isinstance(result, dict):
+        if isinstance(result, dict):
                 mon_name = result.get("monitorName", "")
                 # DDC/CI 失败时返回提示
                 if prefix == "/ddcci" and not result.get("success", True):
                     ctrl_name = {"contrast": "对比度", "color_temp": "色温"}.get(control, control)
                     return f"当前显示器不支持DDC/CI{ctrl_name}调节。"
         _flog(f"[控制] {control} → {value} (displayType={display_type}, monitor='{mon_name}')")
+
+        # ── 一键 HDR：检测游戏 + 渲染管线注入 + OSD 调整 ───────────────
+        if control == "hdr_onekey":
+            game, addon_info = self._detect_foreground_game()
+            is_game = game and game not in ("(系统)", "(应用)", "(终端)", "(资源管理器)",
+                                          "(Cortana)", "(设置)", "(Notepad++)", "VS Code",
+                                          "Visual Studio", "PyCharm", "IntelliJ IDEA",
+                                          "Steam", "Epic", "GOG", "Origin", "Ubisoft")
+            if not (is_game or addon_info):
+                return "未检测到支持HDR的游戏，请先启动游戏"
+
+            game_name = game or "游戏"
+            addon_name = (addon_info or {}).get("addon_name")
+            url = (addon_info or {}).get("url")
+            exe_path = self._get_foreground_process()
+            game_dir = os.path.dirname(exe_path) if exe_path else None
+            hdr = (addon_info or {}).get("hdr_values") or {"brightness": 80, "contrast": 75, "color_temp": 55}
+
+            # 1. 下载 addon 到游戏目录
+            if game_dir and addon_name and url:
+                dest = os.path.join(game_dir, addon_name)
+                if not os.path.exists(dest):
+                    try:
+                        import ssl as _ssl
+                        ctx = _ssl.create_default_context()
+                        ctx.check_hostname = False
+                        ctx.verify_mode = _ssl.CERT_NONE
+                        data = urllib.request.urlopen(url, timeout=30, context=ctx).read()
+                        with open(dest, "wb") as f:
+                            f.write(data)
+                        _flog(f"[HDR] addon 已下载: {addon_name} ({len(data)//1024} KB)")
+                    except Exception as e:
+                        _flog(f"[HDR] addon 下载失败: {e}")
+
+            # 2. 渲染管线注入（若注入器可用）
+            injected = False
+            if _RESHADE_INJECTOR_AVAILABLE and addon_info:
+                pid = self._get_foreground_pid()
+                if pid and game_dir and addon_name:
+                    try:
+                        inj = rdx_inject.ReshadeInjector(game_dir)
+                        addon_abs = os.path.join(game_dir, addon_name)
+                        injected = inj.inject(pid, addon_abs)
+                        _flog(f"[HDR] 渲染管线注入{'成功' if injected else '失败'}")
+                    except Exception as e:
+                        _flog(f"[HDR] 注入异常: {e}")
+
+            # 3. OSD 调整
+            for ctrl, val in hdr.items():
+                self._http_post_json(f"/ddcci/{ctrl}", {"value": val})
+
+            # 4. 合成回复
+            mon_count = self._count_monitors()
+            if mon_count > 1:
+                r = self._http_get_json("/ddcci/status")
+                mon_name = (r or {}).get("monitorName", "")
+                if mon_name:
+                    extra = f"，{mon_name}" if mon_name else ""
+                    if injected:
+                        return f"已为{game_name}开启HDR，亮度{hdr.get('brightness')}、对比度{hdr.get('contrast')}、色温{hdr.get('color_temp')}{extra}，ReShade shader 已注入"
+                    return f"已为{game_name}开启HDR，亮度{hdr.get('brightness')}、对比度{hdr.get('contrast')}、色温{hdr.get('color_temp')}{extra}"
+            if injected:
+                return f"已为{game_name}开启HDR，亮度{hdr.get('brightness')}、对比度{hdr.get('contrast')}、色温{hdr.get('color_temp')}，ReShade shader 已注入"
+            return f"已为{game_name}开启HDR，亮度{hdr.get('brightness')}、对比度{hdr.get('contrast')}、色温{hdr.get('color_temp')}"
 
         # 构造 TTS 回复
         ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量", "color_temp": "色温"}.get(control, control)
@@ -744,11 +823,850 @@ class VoicePipeline(QObject):
             reply = f"好的，已将{ctrl_name}设为{value}%"
         return reply
 
+    # ── RenoDX 游戏支持 ──────────────────────────────────────────────────────
+    _RENODX_GAMES = {
+        "eldenring.exe": "艾尔登法环",
+        "eboot.bin": "只狼",
+        "sekiro.exe": "只狼",
+        "blackmythwukong.exe": "黑神话悟空",
+        "wukong.exe": "黑神话悟空",
+        "cyberpunk2077.exe": "赛博朋克2077",
+        "cp2077.exe": "赛博朋克2077",
+        "hogwartslegacy.exe": "霍格沃茨之遗",
+        "hogwarts legacy.exe": "霍格沃茨之遗",
+        "baldursgate3.exe": "博德之门3",
+        "bg3.exe": "博德之门3",
+        "devilmaycry5.exe": "鬼泣5",
+        "dmc5.exe": "鬼泣5",
+        "dmc5demo.exe": "鬼泣5",
+        "devilmaycry5hd.exe": "鬼泣5",
+        "monsterhunterrise.exe": "怪物猎人崛起",
+        "mhrise.exe": "怪物猎人崛起",
+        "mhrise_s.exe": "怪物猎人崛起",
+        "monsterhunterworld.exe": "怪物猎人世界",
+        "mhworld.exe": "怪物猎人世界",
+        "mhw.exe": "怪物猎人世界",
+        "resident evil 2.exe": "生化危机2重制版",
+        "re2.exe": "生化危机2重制版",
+        "resident evil 3.exe": "生化危机3重制版",
+        "re3.exe": "生化危机3重制版",
+        "resident evil 4 remake.exe": "生化危机4重制版",
+        "re4.exe": "生化危机4重制版",
+        "resident evil 7.exe": "生化危机7",
+        "re7.exe": "生化危机7",
+        "resident evil village.exe": "生化危机村庄",
+        "re8.exe": "生化危机村庄",
+        "ghostwiretokyo.exe": "幽灵线东京",
+        "gwt.exe": "幽灵线东京",
+        "deadisland2.exe": "死亡岛2",
+        "deathstranding.exe": "死亡搁浅",
+        "deathstranding_pc_steam.exe": "死亡搁浅",
+        "metro exodus.exe": "地铁离去",
+        "metro.exe": "地铁离去",
+        "metroexodus.exe": "地铁离去",
+        "control.exe": "控制",
+        "alanwake2.exe": "Alan Wake 2",
+        "alan_wake_2.exe": "Alan Wake 2",
+        "gta5.exe": "GTA5",
+        "gtaonline.exe": "GTA5",
+        "nier replicant ver1.22474487139.exe": "Nier Replicant",
+        "nierautomata.exe": "尼尔机械纪元",
+        "nier.exe": "尼尔机械纪元",
+        "rdr2.exe": "大镖客2",
+        "reddeadredemption2.exe": "大镖客2",
+        "lieofp.exe": "Lies of P",
+        "liesofp.exe": "Lies of P",
+        "shadow of the tomb raider.exe": "古墓丽影暗影",
+        "shadowofthetombraider.exe": "古墓丽影暗影",
+        "sottr.exe": "古墓丽影暗影",
+        "rise of the tomb raider.exe": "古墓丽影崛起",
+        "metro2033redux.exe": "地铁2033",
+        "metro-lastlightredux.exe": "地铁流亡",
+        "darksiders3.exe": "暗黑血统3",
+        "darksiders_warmastered.exe": "暗黑血统原罪初版",
+        "uncharted4.exe": "神秘海域4",
+        "uncharted llc.exe": "神秘海域失落遗产",
+        "spiderman.exe": "蜘蛛侠重制版",
+        "spidermanremastered.exe": "蜘蛛侠重制版",
+        "spiderman-milesmorales.exe": "蜘蛛侠迈尔斯",
+        "spidermanmilesmorales.exe": "蜘蛛侠迈尔斯",
+        "miles morales.exe": "蜘蛛侠迈尔斯",
+        "spiderman-2.exe": "蜘蛛侠2",
+        "spiderman2.exe": "蜘蛛侠2",
+        "god of war.exe": "战神",
+        "gow.exe": "战神",
+        "god of war ragnarok.exe": "战神诸神黄昏",
+        "gowr.exe": "战神诸神黄昏",
+        "forza horizon 5.exe": "极限竞速地平线5",
+        "forzahorizon5.exe": "极限竞速地平线5",
+        "f12024.exe": "F1 24",
+        "f12023.exe": "F1 23",
+        "f122.exe": "F1 22",
+        "assassins creed valhalla.exe": "刺客信条英灵殿",
+        "valhalla.exe": "刺客信条英灵殿",
+        "assassins creed odyssey.exe": "刺客信条奥德赛",
+        "odyssey.exe": "刺客信条奥德赛",
+        "assassins creed origins.exe": "刺客信条起源",
+        "assassins creed mirage.exe": "刺客信条幻景",
+        "acmirage.exe": "刺客信条幻景",
+        "assassins creed syndicate.exe": "刺客信条辛迪加",
+        "assassins creed unity.exe": "刺客信条大革命",
+        "acunity.exe": "刺客信条大革命",
+        "assassins creed black flag.exe": "刺客信条黑旗",
+        "assassins creed revelations.exe": "刺客信条启示录",
+        "assassins creed 3 remastered.exe": "刺客信条3重制版",
+        "assassins creed rogue.exe": "刺客信条枭雄",
+        "wutheringwaves.exe": "鸣潮",
+        "wwgame.pc.launcher.exe": "鸣潮",
+        "wwgame.exe": "鸣潮",
+        "genshinimpact.exe": "原神",
+        "yuanyang.exe": "原神",
+        "hsrgame.exe": "崩坏星穹铁道",
+        "hkrpg.exe": "崩坏3",
+        "bh3.exe": "崩坏3",
+        "honkaistarrail.exe": "崩坏星穹铁道",
+        "star rail.exe": "崩坏星穹铁道",
+        "zenlesszonezero.exe": "绝区零",
+        "zzz.exe": "绝区零",
+        "zzz_launcher.exe": "绝区零",
+        "apexlegends.exe": "Apex英雄",
+        "r5apex.exe": "Apex英雄",
+        "valorant.exe": "无畏契约",
+        "valorant-win-shipping.exe": "无畏契约",
+        "csgo.exe": "CS2",
+        "cs2.exe": "CS2",
+        "lostark.exe": "失落的方舟",
+        "lostarkshared.exe": "失落的方舟",
+        "lostarklauncher.exe": "失落的方舟",
+        "diablo4.exe": "暗黑破坏神4",
+        "d4.exe": "暗黑破坏神4",
+        "overwatch 2.exe": "守望先锋2",
+        "overwatch2.exe": "守望先锋2",
+        "ow2.exe": "守望先锋2",
+        "wow.exe": "魔兽世界",
+        "wowclassic.exe": "魔兽世界经典",
+        "wowclassic_era.exe": "魔兽世界经典怀旧",
+        "wowt.exe": "魔兽世界",
+        "league of legends.exe": "英雄联盟",
+        "leagueclient.exe": "英雄联盟",
+        "riotgames-league-of-legends.exe": "英雄联盟",
+        "client.exe": "客户端",
+        "steam.exe": "Steam",
+        "epicgameslauncher.exe": "Epic",
+        "origingameclient.exe": "Origin",
+        "ubisoft game launcher.exe": "Ubisoft",
+        "minecraft-launcher.exe": "我的世界",
+        "javaw.exe": "Java程序",
+        "code.exe": "VS Code",
+        "devenv.exe": "Visual Studio",
+        "pycharm64.exe": "PyCharm",
+        "idea64.exe": "IntelliJ IDEA",
+        "notepad++.exe": "Notepad++",
+        "tasklist.exe": "(系统)",
+        "explorer.exe": "(资源管理器)",
+        "dwm.exe": "(系统)",
+        "searchui.exe": "(系统)",
+        "searchhost.exe": "(系统)",
+        "runtimebroker.exe": "(系统)",
+        "shellexperiencehost.exe": "(系统)",
+        "startmenuexperiencehost.exe": "(系统)",
+        "widgetservice.exe": "(系统)",
+        "applicationframehost.exe": "(应用)",
+        "windowsterminal.exe": "(终端)",
+        "conhost.exe": "(系统)",
+        "sihost.exe": "(系统)",
+        "fontdrvhost.exe": "(系统)",
+        "winlogon.exe": "(系统)",
+        "services.exe": "(系统)",
+        "lsass.exe": "(系统)",
+        "svchost.exe": "(系统)",
+        "systemsettings.exe": "(设置)",
+    }
+
+    # RenoDX addon 下载/安装信息（exe -> addon信息）
+    _RENODX_ADDONS = {
+        "1000xresist.exe": {
+            "url": "https://mohannedelfatih.github.io/renodx/renodx-1000xresist.addon64",
+            "addon_name": "renodx-1000xresist.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "absolum.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-absolum.addon64",
+            "addon_name": "renodx-absolum.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ac_odyssey_sp.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-asscreedorigins-odyssey.addon64",
+            "addon_name": "renodx-asscreedorigins-odyssey.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ac_valhalla_sp.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-asscreedorigins-odyssey.addon64",
+            "addon_name": "renodx-asscreedorigins-odyssey.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ace7.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-acecombat7.addon64",
+            "addon_name": "renodx-acecombat7.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ace7_skiesunknown.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-acecombat7.addon64",
+            "addon_name": "renodx-acecombat7.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "acorigins_sp.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-asscreedorigins-odyssey.addon64",
+            "addon_name": "renodx-asscreedorigins-odyssey.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "acvalhalla.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-asscreedorigins-odyssey.addon64",
+            "addon_name": "renodx-asscreedorigins-odyssey.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "againstthestorm.exe": {
+            "url": "https://github.com/pmnoxx/renodx/releases/download/snapshot/renodx-_univ.addon64",
+            "addon_name": "renodx-_univ.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "animalwell.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-animalwell.addon64",
+            "addon_name": "renodx-animalwell.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "armoredcore6.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-fromsoft_engine.addon64",
+            "addon_name": "renodx-fromsoft_engine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "berserkbotb.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-BerserkBotH.addon64",
+            "addon_name": "renodx-BerserkBotH.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "blackmythwukong.exe": {
+            "url": "https://github.com/PudingJelly/BlackMythWukong-HDR/releases/download/published/renodx-blackmythwukong.addon64",
+            "addon_name": "renodx-blackmythwukong.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 70, "color_temp": 50},
+        },
+        "citizensleeper2.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-citizensleeper2.addon64",
+            "addon_name": "renodx-citizensleeper2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "cp2077.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-cp2077.addon64",
+            "addon_name": "renodx-cp2077.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 60, "contrast": 65, "color_temp": 50},
+        },
+        "cyberpunk2077.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-cp2077.addon64",
+            "addon_name": "renodx-cp2077.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 60, "contrast": 65, "color_temp": 50},
+        },
+        "darkestdungeon2.exe": {
+            "url": "https://github.com/pmnoxx/renodx/releases/download/snapshot/renodx-_univ.addon64",
+            "addon_name": "renodx-_univ.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "deadislandde.exe": {
+            "url": "https://notvoosh.github.io/renodx/renodx-deadislandde.addon64",
+            "addon_name": "renodx-deadislandde.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "doometernal.exe": {
+            "url": "https://github.com/clshortfuse/renodx/releases/download/snapshot/renodx-doom-eternal.addon64",
+            "addon_name": "renodx-doom-eternal.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "eboot.bin": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-fromsoft_engine.addon64",
+            "addon_name": "renodx-fromsoft_engine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 80, "contrast": 75, "color_temp": 55},
+        },
+        "eldenring.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-fromsoft_engine.addon64",
+            "addon_name": "renodx-fromsoft_engine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 80, "contrast": 75, "color_temp": 55},
+        },
+        "endermagnolia.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-endermagnolia.addon64",
+            "addon_name": "renodx-endermagnolia.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "f12023.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-forzahorizon6.addon64",
+            "addon_name": "renodx-forzahorizon6.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "f12024.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-forzahorizon6.addon64",
+            "addon_name": "renodx-forzahorizon6.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "f122.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-forzahorizon6.addon64",
+            "addon_name": "renodx-forzahorizon6.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "fantasianneodimension.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-fantasianneodimension.addon64",
+            "addon_name": "renodx-fantasianneodimension.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "farcry5.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-farcry5.addon64",
+            "addon_name": "renodx-farcry5.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "farcry6.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-farcry6.addon64",
+            "addon_name": "renodx-farcry6.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ff14.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-ffxiv.addon64",
+            "addon_name": "renodx-ffxiv.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ffxiv.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-ffxiv.addon64",
+            "addon_name": "renodx-ffxiv.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "forzahorizon6.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-forzahorizon6.addon64",
+            "addon_name": "renodx-forzahorizon6.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ghostwiretokyo.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-ghostwiretokyo.addon64",
+            "addon_name": "renodx-ghostwiretokyo.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "gta5.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-gtav-enhanced.addon64",
+            "addon_name": "renodx-gtav-enhanced.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "gtaonline.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-gtav-enhanced.addon64",
+            "addon_name": "renodx-gtav-enhanced.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "hadesii.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-hades2.addon64",
+            "addon_name": "renodx-hades2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "hardresetredux.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-roadhogengine.addon64",
+            "addon_name": "renodx-roadhogengine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "hardspaceshipbreaker.exe": {
+            "url": "https://github.com/pmnoxx/renodx/releases/download/snapshot/renodx-_univ.addon64",
+            "addon_name": "renodx-_univ.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "honkaistarrail.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-honkai-starrail.addon64",
+            "addon_name": "renodx-honkai-starrail.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ixion.exe": {
+            "url": "https://github.com/pmnoxx/renodx/releases/download/snapshot/renodx-_univ.addon64",
+            "addon_name": "renodx-_univ.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "kingdomcome2.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-kingdomcome2.addon64",
+            "addon_name": "renodx-kingdomcome2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "lunacid.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-lunacid.addon64",
+            "addon_name": "renodx-lunacid.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "mafia2.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-mafiade.addon64",
+            "addon_name": "renodx-mafiade.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "mariokart8.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-mk8.addon64",
+            "addon_name": "renodx-mk8.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "metaphorrefantazio.exe": {
+            "url": "https://mohannedelfatih.github.io/renodx/renodx-metaphorrefantazio.addon64",
+            "addon_name": "renodx-metaphorrefantazio.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "nier replicant ver1.22474487139.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-nierreplicant.addon64",
+            "addon_name": "renodx-nierreplicant.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "nier.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-nierautomata.addon64",
+            "addon_name": "renodx-nierautomata.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "nierautomata.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-nierautomata.addon64",
+            "addon_name": "renodx-nierautomata.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "nights of azure 1.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-nightsofazure1.addon64",
+            "addon_name": "renodx-nightsofazure1.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "nights of azure 2.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-nightsofazure2.addon64",
+            "addon_name": "renodx-nightsofazure2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "outerwilds.exe": {
+            "url": "https://mohannedelfatih.github.io/renodx/renodx-outerwilds.addon64",
+            "addon_name": "renodx-outerwilds.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "pathofexile2.exe": {
+            "url": "https://sgtforgery.github.io/renodx/renodx-poe2.addon64",
+            "addon_name": "renodx-poe2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "poe2.exe": {
+            "url": "https://sgtforgery.github.io/renodx/renodx-poe2.addon64",
+            "addon_name": "renodx-poe2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re2.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re7-2r-3r-village.addon64",
+            "addon_name": "renodx-re7-2r-3r-village.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re3.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re7-2r-3r-village.addon64",
+            "addon_name": "renodx-re7-2r-3r-village.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re4.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re4remake.addon64",
+            "addon_name": "renodx-re4remake.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re4_re.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re4remake.addon64",
+            "addon_name": "renodx-re4remake.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re4re.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re4remake.addon64",
+            "addon_name": "renodx-re4remake.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re7.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re7-2r-3r-village.addon64",
+            "addon_name": "renodx-re7-2r-3r-village.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "re8.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re7-2r-3r-village.addon64",
+            "addon_name": "renodx-re7-2r-3r-village.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "riseoftheronin.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-riseofronin.addon64",
+            "addon_name": "renodx-riseofronin.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "robocoproguecity.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-routine.addon64",
+            "addon_name": "renodx-routine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "routineroguecity.exe": {
+            "url": "https://mqhaji.github.io/renodx/renodx-robocop.addon64",
+            "addon_name": "renodx-robocop.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "saoalicization.exe": {
+            "url": "https://github.com/Toru77/renodx/releases/download/snapshot/renodx-sao-alicization.addon64",
+            "addon_name": "renodx-sao-alicization.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "sekiro.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-fromsoft_engine.addon64",
+            "addon_name": "renodx-fromsoft_engine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 80, "contrast": 75, "color_temp": 55},
+        },
+        "silent hill 2 remake.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-silenthill2remake.addon64",
+            "addon_name": "renodx-silenthill2remake.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "silent hill 2.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-silenthill2remake.addon64",
+            "addon_name": "renodx-silenthill2remake.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "sonic unleashed.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-sonicunleashedrecomp.addon64",
+            "addon_name": "renodx-sonicunleashedrecomp.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "sopffo.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-sopffo.addon64",
+            "addon_name": "renodx-sopffo.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "spiderman-milesmorales.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-spiderman_2018_miles.addon64",
+            "addon_name": "renodx-spiderman_2018_miles.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "spiderman2.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-spiderman_2018_miles.addon64",
+            "addon_name": "renodx-spiderman_2018_miles.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "spidermanremastered.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-spiderman_2018_miles.addon64",
+            "addon_name": "renodx-spiderman_2018_miles.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "strangerofparadise.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-sopffo.addon64",
+            "addon_name": "renodx-sopffo.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "sw2.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-roadhogengine.addon64",
+            "addon_name": "renodx-roadhogengine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "sw2013.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-roadhogengine.addon64",
+            "addon_name": "renodx-roadhogengine.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "teardown.exe": {
+            "url": "https://notvoosh.github.io/renodx/renodx-teardown.addon64",
+            "addon_name": "renodx-teardown.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "the evil within 2.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-tew2.addon64",
+            "addon_name": "renodx-tew2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "the hundred line.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-thehundredline.addon64",
+            "addon_name": "renodx-thehundredline.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "the legend of zelda botw.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-botw.addon64",
+            "addon_name": "renodx-botw.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "the legend of zelda totk.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-totk.addon64",
+            "addon_name": "renodx-totk.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "thelegendofzelda.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-botw.addon64",
+            "addon_name": "renodx-botw.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "thevanhelsing.exe": {
+            "url": "https://notvoosh.github.io/renodx/renodx-vanhelsingfinalcut.addon64",
+            "addon_name": "renodx-vanhelsingfinalcut.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "trine2.exe": {
+            "url": "https://github.com/chrisboyer2/renodx/releases/download/v2.0/renodx-trine2.addon64",
+            "addon_name": "renodx-trine2.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "village_re.exe": {
+            "url": "https://github.com/mqhaji/renodx/releases/download/snapshot/renodx-re7-2r-3r-village.addon64",
+            "addon_name": "renodx-re7-2r-3r-village.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "witcher3de.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-thewitcher3.addon64",
+            "addon_name": "renodx-thewitcher3.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "wolongfallendynasty.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-wolong.addon64",
+            "addon_name": "renodx-wolong.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "wuchangfallenfeathers.exe": {
+            "url": "https://oopydoopy.github.io/renodx/renodx-wuchang.addon64",
+            "addon_name": "renodx-wuchang.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "wukong.exe": {
+            "url": "https://github.com/PudingJelly/BlackMythWukong-HDR/releases/download/published/renodx-blackmythwukong.addon64",
+            "addon_name": "renodx-blackmythwukong.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 70, "color_temp": 50},
+        },
+        "xcxde.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-xbcx.addon64",
+            "addon_name": "renodx-xbcx.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "xenobladechroniclesxde.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-xbcx.addon64",
+            "addon_name": "renodx-xbcx.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "yakuza0.exe": {
+            "url": "https://akuru-q.github.io/renodx/renodx-yakuza0.addon64",
+            "addon_name": "renodx-yakuza0.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ysixmonstrumnox.exe": {
+            "url": "https://danaforever.github.io/renodx/renodx-ys9.addon64",
+            "addon_name": "renodx-ys9.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ysx nordics.exe": {
+            "url": "https://marat569.github.io/renodx/renodx-ys10.addon64",
+            "addon_name": "renodx-ys10.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "ysxproudnordics.exe": {
+            "url": "https://github.com/Toru77/renodx/releases/download/snapshot/renodx-ys10pn.addon64",
+            "addon_name": "renodx-ys10pn.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "zelda_botw.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-botw.addon64",
+            "addon_name": "renodx-botw.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+        "zelda_totk.exe": {
+            "url": "https://souperman9.github.io/renodx/renodx-totk.addon64",
+            "addon_name": "renodx-totk.addon64",
+            "path": None,
+            "hdr_values": {"brightness": 75, "contrast": 72, "color_temp": 55},
+        },
+
+        "ffxv.exe": {
+            "url": "https://danaforever.github.io/renodx/renodx-ffxv.addon64",
+            "addon_name": "renodx-ffxv.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "mhrise.exe": {
+            "url": "https://github.com/Izueh/renodx/releases/download/snapshot/renodx-mhrise.addon64",
+            "addon_name": "renodx-mhrise.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "nierautomata.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-nierautomata.addon64",
+            "addon_name": "renodx-nierautomata.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "starfield.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-starfield.addon64",
+            "addon_name": "renodx-starfield.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "wutheringwaves.exe": {
+            "url": "https://clshortfuse.github.io/renodx/renodx-wutheringwaves.addon64",
+            "addon_name": "renodx-wutheringwaves.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "zenlesszonezero.exe": {
+            "url": "https://github.com/MapleHinata/renodx/releases/latest/download/renodx-zenless-zone-zero.addon64",
+            "addon_name": "renodx-zenless-zone-zero.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+        "zzz.exe": {
+            "url": "https://github.com/MapleHinata/renodx/releases/latest/download/renodx-zenless-zone-zero.addon64",
+            "addon_name": "renodx-zenless-zone-zero.addon64",
+            "path": None,
+            "hdr_values": {'brightness': 75, 'contrast': 72, 'color_temp': 55},
+        },
+    }
+
+    def _get_foreground_process(self):
+        """获取前景窗口进程的完整路径"""
+        try:
+            import ctypes
+            from ctypes import windll
+            psapi = windll.psapi
+            kernel32 = windll.kernel32
+            user32 = windll.user32
+            GetForegroundWindow = user32.GetForegroundWindow
+            GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+            OpenProcess = kernel32.OpenProcess
+            CloseHandle = kernel32.CloseHandle
+            GetModuleFileNameExW = psapi.GetModuleFileNameExW
+            PROCESS_QUERY_INFORMATION = 0x0400
+            hwnd = GetForegroundWindow()
+            if not hwnd:
+                return None
+            pid = ctypes.c_ulong()
+            GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            h = OpenProcess(PROCESS_QUERY_INFORMATION, False, pid.value)
+            if not h:
+                return None
+            try:
+                buf = ctypes.create_unicode_buffer(260)
+                if GetModuleFileNameExW(h, 0, buf, 260):
+                    return buf.value
+            finally:
+                CloseHandle(h)
+        except Exception as e:
+            _flog(f"[游戏检测] 获取进程路径失败: {e}")
+        return None
+
+    def _get_foreground_pid(self):
+        """获取前景窗口的 PID"""
+        try:
+            import ctypes
+            from ctypes import windll
+            user32 = windll.user32
+            kernel32 = windll.kernel32
+            GetForegroundWindow = user32.GetForegroundWindow
+            GetWindowThreadProcessId = user32.GetWindowThreadProcessId
+            pid = ctypes.c_ulong()
+            GetWindowThreadProcessId(GetForegroundWindow(), ctypes.byref(pid))
+            return pid.value if pid.value else None
+        except Exception as e:
+            _flog(f"[游戏检测] 获取 PID 失败: {e}")
+        return None
+
+    def _detect_foreground_game(self):
+        """检测前景窗口是否在 RenoDX 支持列表中，返回 (游戏名, addon_info) 或 (None, None)"""
+        path = self._get_foreground_process()
+        if not path:
+            return None, None
+        exe = os.path.basename(path).lower()
+        name = self._RENODX_GAMES.get(exe)
+        addon_info = None
+        if exe in self._RENODX_ADDONS:
+            addon_info = self._RENODX_ADDONS[exe]
+        if name or addon_info:
+            _flog(f"[游戏] 检测到: {exe} -> {name or addon_info.get('addon_name')}")
+        return name, addon_info
+
     def _llm_intent_detect(self, text):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温控制意图。\n\n"
+                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温、HDR控制意图。\n\n"
                 "规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
@@ -763,7 +1681,7 @@ class VoicePipeline(QObject):
                 "- \"晚上眼睛受不了\" → 亮度过高，adjust brightness -10\n"
                 "- \"太冷/偏冷/太蓝\" → 色温过高，adjust color_temp -10\n"
                 "- \"太暖/偏暖/太黄\" → 色温过低，adjust color_temp +10\n"
-                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度/色温\"的抱怨或请求都算控制意图\n\n"
+                "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度/色温/HDR/开启HDR\"的抱怨或请求都算控制意图\n\n"
                 "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
                 "输出格式：\n"
                 "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"

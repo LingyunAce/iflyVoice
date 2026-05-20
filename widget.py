@@ -4,6 +4,11 @@
 Voice AI Widget — 圆形悬浮球变形为胶囊聊天面板 + 内嵌 HTTP 服务
 """
 import sys, os, json, time, threading, subprocess, re
+# 确保 reshade_inject 能被导入（PyInstaller onefile 解压路径）
+_meipass = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+_pkg_src = os.path.join(_meipass, "reshade_inject")
+if os.path.isdir(_pkg_src) and _pkg_src not in sys.path:
+    sys.path.insert(0, _pkg_src)
 from urllib.request import urlopen, Request
 import sounddevice as sd
 
