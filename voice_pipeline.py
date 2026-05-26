@@ -196,7 +196,7 @@ class VoicePipeline(QObject):
         self._tts_generation = 0                    # TTS 代次（防旧线程干扰新线程）
         self._tts_muted = False                     # 禁止自动朗读
         self._mic_device = None                     # 麦克风设备（None=默认）
-        self._model = "qwen3-vl:4b"                # LLM 模型名称
+        self._model = "qwen3-vl:2b"                # LLM 模型名称
 
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
