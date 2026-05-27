@@ -59,6 +59,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("GET")
         elif self.path.startswith("/ddcci/"):
             self._handle_ddcci("GET")
+        elif self.path.startswith("/bilibili/"):
+            self._handle_bilibili()
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
         else:
@@ -77,6 +79,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("POST")
         elif self.path.startswith("/ddcci/"):
             self._handle_ddcci("POST")
+        elif self.path.startswith("/bilibili/"):
+            self._handle_bilibili()
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
         else:
@@ -500,6 +504,110 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             _log(f"[SenseVoice] Error: {e}")
             self._send_json(500, {"success": False, "error": str(e)})
+
+    # B站 wbi 签名混钥表
+    _BILI_MIXIN_TAB = [
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    ]
+
+    @classmethod
+    def _bili_wbi_sign(cls, params, img_key, sub_key):
+        """B站 wbi 签名"""
+        import hashlib, time, urllib.parse
+        orig = img_key + sub_key
+        mixin_key = "".join([orig[i] for i in cls._BILI_MIXIN_TAB])[:32]
+        params["wts"] = int(time.time())
+        params = dict(sorted(params.items()))
+        query = urllib.parse.urlencode(params)
+        params["w_rid"] = hashlib.md5((query + mixin_key).encode()).hexdigest()
+        return params
+
+    def _handle_bilibili(self):
+        """GET /bilibili/search?keyword=xxx — 搜索B站，播报结果，打开第一个视频"""
+        import subprocess, urllib.parse
+        from urllib.request import Request, urlopen
+        params = self._parse_query_params()
+        keyword = params.get("keyword", "")
+        if not keyword:
+            self._send_json(400, {"success": False, "error": "缺少 keyword 参数"})
+            return
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com",
+            "Origin": "https://www.bilibili.com",
+        }
+
+        try:
+            # 1. 获取 wbi 签名密钥
+            nav_req = Request("https://api.bilibili.com/x/web-interface/nav", headers=headers)
+            nav_resp = urlopen(nav_req, timeout=8)
+            nav_data = json.loads(nav_resp.read().decode("utf-8"))
+            wbi_img = nav_data["data"]["wbi_img"]
+            img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
+            sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
+
+            # 2. wbi 签名搜索请求
+            search_params = self._bili_wbi_sign(
+                {"search_type": "video", "keyword": keyword, "page": 1, "page_size": 5},
+                img_key, sub_key,
+            )
+            query = urllib.parse.urlencode(search_params)
+            api_url = f"https://api.bilibili.com/x/web-interface/wbi/search/type?{query}"
+            req = Request(api_url, headers=headers)
+            resp = urlopen(req, timeout=10)
+            data = json.loads(resp.read().decode("utf-8"))
+
+            results = []
+            video_url = ""
+            if data.get("code") == 0 and data.get("data", {}).get("result"):
+                for item in data["data"]["result"][:3]:
+                    title = item.get("title", "").replace("<em class=\"keyword\">", "").replace("</em>", "")
+                    author = item.get("author", "")
+                    bvid = item.get("bvid", "")
+                    results.append({"title": title, "author": author, "bvid": bvid})
+                if results:
+                    video_url = f"https://www.bilibili.com/video/{results[0]['bvid']}"
+
+            if not results:
+                search_url = f"https://search.bilibili.com/video?keyword={urllib.parse.quote(keyword)}"
+                subprocess.Popen(["cmd", "/c", "start", "", search_url],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+                self._send_json(200, {"success": True, "video_url": search_url, "results": [],
+                                      "message": f"未找到视频结果，已打开B站搜索页: {keyword}"})
+                return
+
+            # 打开第一个视频
+            subprocess.Popen(["cmd", "/c", "start", "", video_url],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+            self._send_json(200, {"success": True, "video_url": video_url, "results": results})
+        except Exception as e:
+            # 出错时回退到搜索页
+            try:
+                search_url = f"https://search.bilibili.com/video?keyword={urllib.parse.quote(keyword)}"
+                subprocess.Popen(["cmd", "/c", "start", "", search_url],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                creationflags=subprocess.CREATE_NO_WINDOW)
+                self._send_json(200, {"success": True, "video_url": search_url, "results": [],
+                                      "message": f"B站API请求失败，已打开搜索页: {keyword}"})
+            except Exception:
+                self._send_json(500, {"success": False, "error": str(e)})
+
+    def _parse_query_params(self):
+        """从 URL 中提取查询参数"""
+        params = {}
+        if "?" in self.path:
+            query = self.path.split("?", 1)[1]
+            for pair in query.split("&"):
+                if "=" in pair:
+                    k, v = pair.split("=", 1)
+                    params[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
+        return params
 
     def _handle_tts(self):
         """Proxy text-to-speech to CosyVoice2 at 192.168.1.32:9997/v1/audio/speech"""
