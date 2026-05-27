@@ -295,6 +295,8 @@ class Handler(BaseHTTPRequestHandler):
             "contrast_read": ("GET",  lambda: self._ddcci_get_vcp(0x12, "contrast")),
             "color_temp":    ("POST", lambda b=body: self._ddcci_set_color_temp(b)),
             "monitor_count": ("GET",  lambda: self._ddcci_monitor_count()),
+            "input_sources": ("GET",  lambda: self._ddcci_input_sources()),
+            "input":         ("ALL",  lambda b=body: self._ddcci_set_input(b) if method == "POST" else self._ddcci_get_input()),
         }
         if endpoint not in handlers:
             return self._send_json(404, {"success": False, "error": f"Unknown DDC/CI endpoint: {endpoint}"})
@@ -513,6 +515,194 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(200, {"success": False, "error": "SetVCPFeature 0x14 failed，当前显示器可能不支持DDC/CI色温调节"})
         except Exception as e:
             import traceback; _log(f"[DDC/CI] color_temp 异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    # ── 输入源 ─────────────────────────────────────────────────────────────────
+
+    _INPUT_SOURCE_NAMES = {
+        0x01: "VGA (Analog)",
+        0x02: "DVI-1",
+        0x03: "DVI-2",
+        0x04: "Composite",
+        0x05: "S-Video",
+        0x06: "Tuner-TV",
+        0x07: "Component",
+        0x0F: "DisplayPort-1",
+        0x10: "HDMI-1",
+        0x11: "HDMI-1 (Alt)",
+        0x12: "HDMI-2",
+        0x13: "HDMI-3",
+        0x14: "HDMI-4",
+        0x15: "USB-C",
+        0x16: "Thunderbolt",
+        0x1B: "USB-C (Alt)",
+        0x1D: "DP over USB-C",
+    }
+
+    @staticmethod
+    def _input_source_name(code):
+        name = Handler._INPUT_SOURCE_NAMES.get(code)
+        return name or f"Unknown (0x{code:02X})"
+
+    def _ddcci_input_sources(self):
+        """GET /ddcci/input_sources — 枚举显示器支持的输入源"""
+        hPhys, mon_name, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {"supported": False, "reason": err or "无法获取显示器"})
+        import ctypes
+        from ctypes import windll, byref, c_ubyte, c_uint
+        try:
+            dxva2 = windll.dxva2
+            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
+            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct), byref(cur), byref(mx))
+            if not ret:
+                return self._send_json(200, {"supported": False, "reason": "显示器不支持 VCP 0x60（输入源）"})
+            current = cur.value
+            max_code = mx.value  # max input source code
+            # max=3 且 current 高字节非零 → 扩展编码（Android/内置系统源）
+            if max_code == 3 and (current >> 8) != 0:
+                actual_code = current & 0xFF
+                sources = [
+                    {"code": actual_code, "encoding": "extended", "name": "Android/内置系统", "is_current": True},
+                    {"code": 0x03, "encoding": "standard", "name": "HDMI-2", "is_current": False},
+                    {"code": 0x04, "encoding": "standard", "name": "HDMI-3", "is_current": False},
+                ]
+            else:
+                actual_code = current & 0xFF
+                sources = []
+                for code in range(1, max_code + 1):
+                    sources.append({
+                        "code": code,
+                        "encoding": "standard",
+                        "name": Handler._input_source_name(code),
+                        "is_current": actual_code == code,
+                    })
+            self._send_json(200, {
+                "supported": True,
+                "current": current,
+                "current_name": Handler._input_source_name(current & 0xFF),
+                "extended_encoding": max_code == 3 and (current >> 8) != 0,
+                "encoding_type": current >> 8 if max_code == 3 and (current >> 8) != 0 else 0,
+                "sources": sources,
+                "monitorName": mon_name or "",
+            })
+        except Exception as e:
+            import traceback; _log(f"[DDC/CI] input_sources 异常: {e}\n{traceback.format_exc()}\n")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _ddcci_get_input(self):
+        """GET /ddcci/input — 获取当前输入源"""
+        hPhys, mon_name, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {"supported": False, "reason": err or "无法获取显示器"})
+        import ctypes
+        from ctypes import windll, byref, c_ubyte, c_uint
+        try:
+            dxva2 = windll.dxva2
+            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
+            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct), byref(cur), byref(mx))
+            if ret:
+                code = cur.value & 0xFF
+                is_extended = mx.value == 3 and (cur.value >> 8) != 0
+                self._send_json(200, {
+                    "supported": True,
+                    "code": code,
+                    "raw_code": cur.value,
+                    "name": Handler._input_source_name(code),
+                    "extended_encoding": is_extended,
+                    "monitorName": mon_name or "",
+                })
+            else:
+                self._send_json(200, {"supported": False, "reason": "VCP 0x60 读取失败"})
+        except Exception as e:
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _ddcci_set_input(self, body):
+        """POST /ddcci/input — 切换输入源，含回退"""
+        hPhys, mon_name, err = Handler._get_physical_monitor()
+        if hPhys is None:
+            return self._send_json(200, {"success": False, "error": err or "无法获取显示器"})
+        import ctypes
+        from ctypes import windll, byref, c_ubyte, c_uint
+        try:
+            dxva2 = windll.dxva2
+
+            # 1. 读取当前输入源（备份）
+            vct_old = c_ubyte(); cur_old = c_uint(); mx_old = c_uint()
+            dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_old), byref(cur_old), byref(mx_old))
+            old_code = cur_old.value & 0xFF
+
+            # 2. 获取目标输入源
+            target = body.get("code")
+            if target is None:
+                return self._send_json(400, {"success": False, "error": "缺少 code 参数"})
+            try:
+                target_code = int(target)
+            except (ValueError, TypeError):
+                return self._send_json(400, {"success": False, "error": f"无效的 code: {target}"})
+
+            if not (1 <= target_code <= 255):
+                return self._send_json(400, {"success": False, "error": f"code 必须在 1-255 之间"})
+
+            _log(f"[DDC/CI] 切换输入源: 0x{old_code:02X} -> 0x{target_code:02X}")
+
+            # 3. 写入目标输入源
+            ret = dxva2.SetVCPFeature(hPhys, 0x60, target_code)
+            if not ret:
+                return self._send_json(200, {
+                    "success": False, "error": f"SetVCPFeature 0x60={target_code} 失败，显示器可能不支持输入源切换"
+                })
+
+            # 4. 等待稳定
+            import time; time.sleep(2)
+
+            # 5. 验证是否切换成功
+            vct_new = c_ubyte(); cur_new = c_uint(); mx_new = c_uint()
+            dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_new), byref(cur_new), byref(mx_new))
+            actual = cur_new.value & 0xFF
+
+            if actual == target_code:
+                _log(f"[DDC/CI] 输入源切换成功: 0x{old_code:02X} -> 0x{actual:02X}")
+                return self._send_json(200, {
+                    "success": True,
+                    "old_code": old_code,
+                    "old_name": Handler._input_source_name(old_code),
+                    "code": actual,
+                    "name": Handler._input_source_name(actual),
+                    "message": f"已切换到{Handler._input_source_name(actual)}",
+                    "monitorName": mon_name or "",
+                })
+            else:
+                # 6. 切换失败，执行回退
+                _log(f"[DDC/CI] 输入源切换验证失败: 期望 0x{target_code:02X}，实际 0x{actual:02X}，执行回退")
+                dxva2.SetVCPFeature(hPhys, 0x60, old_code)
+                time.sleep(1)
+                # 验证回退
+                dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_old), byref(cur_old), byref(mx_old))
+                restored = cur_old.value & 0xFF
+                if restored == old_code:
+                    _log(f"[DDC/CI] 回退成功: 恢复到 0x{old_code:02X}")
+                    return self._send_json(200, {
+                        "success": False,
+                        "error": f"输入源切换失败，已恢复到{Handler._input_source_name(old_code)}",
+                        "old_code": old_code,
+                        "old_name": Handler._input_source_name(old_code),
+                        "actual": actual,
+                        "restored": True,
+                        "monitorName": mon_name or "",
+                    })
+                else:
+                    _log(f"[DDC/CI] 回退也失败了！当前=0x{restored:02X}，期望=0x{old_code:02X}")
+                    return self._send_json(200, {
+                        "success": False,
+                        "error": f"输入源切换失败，回退也失败，当前={Handler._input_source_name(restored)}",
+                        "old_code": old_code,
+                        "actual": actual,
+                        "restored": False,
+                        "monitorName": mon_name or "",
+                    })
+        except Exception as e:
+            import traceback; _log(f"[DDC/CI] set_input 异常: {e}\n{traceback.format_exc()}\n")
             self._send_json(500, {"success": False, "error": str(e)})
 
     SENSEVOICE_CONFIG = {"base_url": "http://192.168.1.32:9997", "api_key": "sk-86ccca26e58a8", "model": "SenseVoiceSmall"}

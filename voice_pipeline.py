@@ -121,6 +121,20 @@ def parse_voice_command(text):
     if re.search(r'音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)', t):
         return {"action": "adjust", "control": "volume", "delta": -10}
 
+    # ── 输入源切换 ──
+    input_map = [
+        ("hdmi", 0x10), ("hdmi-1", 0x10),
+        ("displayport", 0x0F), ("dp", 0x0F),
+        ("dvi", 0x02),
+        ("usb-c", 0x15), ("usbc", 0x15),
+        ("vga", 0x01),
+    ]
+    for kw, code in input_map:
+        if re.search(rf'(?:切换到?|切到?|切|换到?)(?:{kw})', t):
+            return {"action": "switch_input", "code": code}
+    if re.search(r'(?:切换|切到?)输入源', t):
+        return {"action": "list_inputs"}
+
     return None
 
 
@@ -667,7 +681,64 @@ class VoicePipeline(QObject):
     def _execute_display_control(self, intent):
         """执行显示器控制命令，返回 TTS 回复文字"""
         action = intent["action"]
-        control = intent["control"]
+        control = intent.get("control", "")
+
+        # ── 输入源切换 ───────────────────────────────────────────────
+        if action == "list_inputs":
+            try:
+                r = self._http_get_json("/ddcci/input_sources")
+                if not (r or {}).get("supported"):
+                    return "当前显示器不支持输入源检测"
+                sources = r.get("sources", [])
+                current = r.get("current_name", "")
+                extended = r.get("extended_encoding", False)
+                if extended:
+                    return (f"当前输入源：{current}（扩展编码模式，内置Android系统），"
+                            f"可用：{', '.join(s.get('name','') for s in sources)}。"
+                            f"DDC/CI无法切换到Android，请使用显示器自带OSD或遥控器")
+                lines = [f"当前输入源：{current}，可用输入源："]
+                for s in sources:
+                    cur_mark = " ← 当前" if s.get("is_current") else ""
+                    lines.append(f"{s.get('name','')}{cur_mark}")
+                return "，".join(lines)
+            except Exception as e:
+                return f"查询输入源失败：{e}"
+
+        if action == "switch_input":
+            code = intent.get("code")
+            if not code:
+                # 列出可用输入源
+                try:
+                    r = self._http_get_json("/ddcci/input_sources")
+                    if not (r or {}).get("supported"):
+                        return "当前显示器不支持输入源切换"
+                    sources = r.get("sources", [])
+                    names = [s.get("name", "") for s in sources]
+                    current = r.get("current_name", "")
+                    extended = r.get("extended_encoding", False)
+                    if extended:
+                        return (f"当前输入源：{current}（扩展编码模式），"
+                                f"可用：{', '.join(names)}。内置系统源无法通过DDC/CI切换，"
+                                f"请使用显示器OSD或遥控器切换到HDMI输入源")
+                    return f"当前输入源：{current}，可用：{', '.join(names)}"
+                except Exception as e:
+                    return f"查询输入源失败：{e}"
+            try:
+                r = self._http_post_json("/ddcci/input", {"code": code})
+                if not (r or {}).get("success"):
+                    err = (r or {}).get("error", "切换失败")
+                    # 回退成功时
+                    if (r or {}).get("restored"):
+                        old_name = (r or {}).get("old_name", "")
+                        return f"{err}，已恢复到{old_name}"
+                    return err
+                name = (r or {}).get("name", f"0x{code:02X}")
+                old_name = (r or {}).get("old_name", "")
+                return f"已从{old_name}切换到{name}" if old_name else f"已切换到{name}"
+            except Exception as e:
+                return f"输入源切换失败：{e}"
+
+        # ── 常规亮度/对比度/色温/音量 ──────────────────────────────
 
         # 读取 displayType
         dt_resp = self._http_get_json("/config/displayType")
@@ -748,12 +819,14 @@ class VoicePipeline(QObject):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温控制意图。\n\n"
+                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温、输入源切换控制意图。\n\n"
                 "规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
                 "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
-                "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n\n"
+                "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n"
+                "- \"切换到HDMI/切到DisplayPort/切HDMI/切DP\" → action=switch_input, code=0x10/0x0F/0x0F\n"
+                "- \"列出输入源/有哪些输入源\" → action=list_inputs\n\n"
                 "语义理解（重要）：\n"
                 "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -10\n"
                 "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +10\n"
