@@ -156,9 +156,16 @@ def _parse_single(text):
         return {"action": "set", "control": "volume", "value": 0}
 
     # ── B站搜索 ──
+    # 带B站关键词的搜索
     m = re.search(r'(?:搜索|找|播放|听)(?:.*?)?(?:B站|哔哩哔哩|b站|bilibili)(?:.*?)?(.+)', t)
     if not m:
         m = re.search(r'(?:B站|哔哩哔哩|b站|bilibili)(?:.*?)?(?:搜索|找|播放|听)?(?:.*?)?(.+)', t)
+    if m:
+        keyword = m.group(1).strip()
+        if keyword and len(keyword) >= 2:
+            return {"action": "bilibili_search", "keyword": keyword}
+    # "播放/听xx" 默认在B站搜索（无需提到B站）
+    m = re.search(r'(?:播放|听)(.+)', t)
     if m:
         keyword = m.group(1).strip()
         if keyword and len(keyword) >= 2:
@@ -247,6 +254,7 @@ class VoicePipeline(QObject):
         self._vad_model = None
         self._oww_model = None
         self._whisper_model = None
+        self._sensevoice_model = None
 
         # 音频缓冲
         self._audio_deque = collections.deque(maxlen=100)  # ~3.2s buffer
@@ -364,14 +372,28 @@ class VoicePipeline(QObject):
         # 唤醒词检测使用 ASR 方式，无需额外模型
         _flog("[唤醒] 使用 ASR 方式检测唤醒词")
 
-        # faster-whisper ASR
+        # SenseVoice 本地 ASR（优先）
+        try:
+            _flog("[ASR] 加载 SenseVoice 本地模型...")
+            from funasr import AutoModel
+            self._sensevoice_model = AutoModel(
+                model="iic/SenseVoiceSmall",
+                device="cpu",
+                disable_update=True,
+            )
+            _flog("[ASR] SenseVoice 本地模型加载完成")
+        except Exception as e:
+            _flog(f"[ASR] SenseVoice 加载失败: {e}")
+            self._sensevoice_model = None
+
+        # faster-whisper ASR（备选）
         try:
             _flog("[ASR] 加载 faster-whisper 模型...")
             from faster_whisper import WhisperModel
-            self._whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+            self._whisper_model = WhisperModel("small", device="cpu", compute_type="int8")
             _flog("[ASR] faster-whisper 加载完成")
         except Exception as e:
-            _flog(f"[ASR] faster-whisper 加载失败: {e}，将回退到 SenseVoice")
+            _flog(f"[ASR] faster-whisper 加载失败: {e}")
             self._whisper_model = None
 
     def _audio_loop(self):
@@ -469,10 +491,10 @@ class VoicePipeline(QObject):
             else:
                 self._silence_frames += 1
 
-            # 检查唤醒词（积累 ~1.5 秒音频后，每 ~500ms 检查一次）
-            min_bytes = int(self._sample_rate * 1.5 * 2)  # 1.5 秒的 int16 数据
+            # 检查唤醒词（积累 ~0.8 秒音频后，每 ~300ms 检查一次）
+            min_bytes = int(self._sample_rate * 0.8 * 2)  # 0.8 秒的 int16 数据
             now = time.time()
-            if len(self._speech_buffer) >= min_bytes and (now - self._last_wake_check_ts) >= 0.5:
+            if len(self._speech_buffer) >= min_bytes and (now - self._last_wake_check_ts) >= 0.3:
                 self._last_wake_check_ts = now
                 if self._check_wake_word():
                     _flog(f"[唤醒] 唤醒词命中: {self._wake_word}")
@@ -484,8 +506,8 @@ class VoicePipeline(QObject):
                     self._set_state(PipelineState.COMMAND_LISTEN)
                     return
                 else:
-                    # 唤醒词未命中，清理旧缓冲（保留最近 1.5 秒）
-                    max_keep = int(self._sample_rate * 1.5 * 2)
+                    # 唤醒词未命中，清理旧缓冲（保留最近 1 秒）
+                    max_keep = int(self._sample_rate * 1.0 * 2)
                     if len(self._speech_buffer) > max_keep * 2:
                         self._speech_buffer = self._speech_buffer[-max_keep:]
 
@@ -546,18 +568,109 @@ class VoicePipeline(QObject):
         """将 chunk 追加到语音缓冲"""
         self._speech_buffer.extend(chunk.tobytes())
 
+    @staticmethod
+    def _edit_distance(a, b):
+        """计算两个字符串的编辑距离"""
+        m, n = len(a), len(b)
+        dp = list(range(n + 1))
+        for i in range(1, m + 1):
+            prev = dp[0]
+            dp[0] = i
+            for j in range(1, n + 1):
+                temp = dp[j]
+                if a[i - 1] == b[j - 1]:
+                    dp[j] = prev
+                else:
+                    dp[j] = 1 + min(prev, dp[j], dp[j - 1])
+                prev = temp
+        return dp[n]
+
+    def _fuzzy_match_wake(self, text):
+        """模糊匹配唤醒词，容忍 ASR 识别错误"""
+        text_lower = text.lower().strip()
+        wake_lower = self._wake_word.lower()
+
+        # 精确包含
+        if wake_lower in text_lower:
+            return True
+
+        # 检查文本前 N 个字的滑动窗口（唤醒词通常在开头）
+        wake_len = len(wake_lower)
+        for i in range(min(len(text_lower), wake_len + 2)):
+            for end in range(i + wake_len - 1, min(len(text_lower), i + wake_len + 2) + 1):
+                window = text_lower[i:end + 1]
+                dist = self._edit_distance(window, wake_lower)
+                if dist <= 1:  # 允许 1 个字的错误
+                    _flog(f"[唤醒] 模糊匹配: '{window}' ≈ '{wake_lower}' (距离={dist})")
+                    return True
+
+        return False
+
+    def _transcribe_pcm_sensevoice(self, pcm_data):
+        """用本地 SenseVoice 识别 PCM int16 音频，返回文本"""
+        if self._sensevoice_model is None:
+            return ""
+        try:
+            audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            peak = np.max(np.abs(audio))
+            if peak > 0.01:
+                audio = audio * (0.9 / peak)
+            result = self._sensevoice_model.generate(
+                input=audio, fs=self._sample_rate,
+                language="zh", use_itn=True,
+            )
+            if result and len(result) > 0:
+                text = result[0].get("text", "").strip()
+                # SenseVoice 输出格式：<|zh|><|NEUTRAL|><|Speech|><|withitn|>实际文本
+                # 去掉所有 <|...|> 标签
+                text = re.sub(r'<\|[^>]+\|>', '', text).strip()
+                _flog(f"[ASR] SenseVoice 原始: {result[0].get('text', '')!r} → 清理后: {text!r}")
+                return text
+            return ""
+        except Exception as e:
+            _flog(f"[ASR] SenseVoice 识别异常: {e}")
+            return ""
+
+    def _transcribe_pcm_wake(self, pcm_data):
+        """用 faster-whisper 识别短语音（唤醒词场景），参数更激进"""
+        if self._whisper_model is None:
+            return ""
+        try:
+            audio = np.frombuffer(pcm_data, dtype=np.int16).astype(np.float32) / 32768.0
+            peak = np.max(np.abs(audio))
+            if peak > 0.01:
+                audio = audio * (0.9 / peak)
+            segments, _ = self._whisper_model.transcribe(
+                audio, language="zh", beam_size=10, best_of=5,
+                vad_filter=False,
+                condition_on_previous_text=False,
+                no_speech_threshold=0.3,
+                log_prob_threshold=-0.5,
+            )
+            text = "".join(seg.text for seg in segments).strip()
+            return text
+        except Exception as e:
+            _flog(f"[ASR] faster-whisper 唤醒词识别异常: {e}")
+            return ""
+
     def _check_wake_word(self):
         """检查缓冲音频中是否包含唤醒词（ASR 方式）"""
-        if len(self._speech_buffer) < self._sample_rate * 2:  # 至少 1 秒
+        if len(self._speech_buffer) < self._sample_rate * 1:  # 至少 0.5 秒
             return False
 
         try:
             pcm_data = bytes(self._speech_buffer)
 
-            # 优先用 faster-whisper 本地识别
-            if self._whisper_model is not None:
-                text = self._transcribe_pcm(pcm_data)
-            else:
+            # 优先用 SenseVoice 本地识别
+            text = ""
+            if self._sensevoice_model is not None:
+                text = self._transcribe_pcm_sensevoice(pcm_data)
+            # SenseVoice 失败时回退到 faster-whisper
+            if not text and self._whisper_model is not None:
+                _flog("[唤醒] SenseVoice 无结果，回退 faster-whisper")
+                text = self._transcribe_pcm_wake(pcm_data)
+            # 都失败时回退到远程 SenseVoice API
+            if not text:
                 # 回退：转 webm 发送到 SenseVoice
                 webm_file = os.path.join(tempfile.gettempdir(), f"wake_{uuid.uuid4().hex}.webm")
                 proc = subprocess.run(
@@ -579,19 +692,8 @@ class VoicePipeline(QObject):
 
             _flog(f"[唤醒] ASR 结果: {text}")
 
-            # 检查是否以唤醒词开头
-            text_lower = text.lower().strip()
-            wake_lower = self._wake_word.lower()
-            if text_lower.startswith(wake_lower):
-                return True
-
-            # 也检查是否包含唤醒词（更宽松）
-            if wake_lower in text_lower:
-                return True
-
-            # ASR 可能漏掉"小"字，回退检查"助手"
-            if wake_lower.startswith("小") and "助手" in text_lower:
-                _flog(f"[唤醒] 回退匹配'助手'")
+            # 模糊匹配唤醒词
+            if self._fuzzy_match_wake(text):
                 return True
 
             return False
@@ -603,11 +705,15 @@ class VoicePipeline(QObject):
     def _process_command(self, pcm_data):
         """Worker 线程：ASR + LLM + 实时 TTS"""
         try:
-            # 1. ASR
-            if self._whisper_model is not None:
-                _flog(f"[ASR] 使用 faster-whisper 本地识别...")
+            # 1. ASR（SenseVoice → faster-whisper → 远程API）
+            text = ""
+            if self._sensevoice_model is not None:
+                _flog(f"[ASR] 使用 SenseVoice 本地识别...")
+                text = self._transcribe_pcm_sensevoice(pcm_data)
+            if not text and self._whisper_model is not None:
+                _flog(f"[ASR] SenseVoice 无结果，回退 faster-whisper...")
                 text = self._transcribe_pcm(pcm_data)
-            else:
+            if not text:
                 # 回退：转 webm 发送到 SenseVoice
                 webm_file = os.path.join(tempfile.gettempdir(), f"cmd_{uuid.uuid4().hex}.webm")
                 proc = subprocess.run(
@@ -635,12 +741,21 @@ class VoicePipeline(QObject):
                 return
 
             _flog(f"[ASR] 识别结果: {text}")
-            # 去掉开头的唤醒词
+            # 去掉开头的唤醒词（模糊匹配，容忍 ASR 误差）
             text_lower = text.lower().strip()
             wake_lower = self._wake_word.lower()
-            if text_lower.startswith(wake_lower):
-                text = text[len(self._wake_word):].strip()
-            elif wake_lower in text_lower:
+            wake_len = len(wake_lower)
+            stripped = False
+            # 检查前缀附近（允许 ±1 字符的长度偏差）
+            for end in range(wake_len - 1, min(len(text_lower), wake_len + 2) + 1):
+                prefix = text_lower[:end + 1]
+                dist = self._edit_distance(prefix, wake_lower)
+                if dist <= 1:
+                    text = text[end + 1:].strip()
+                    _flog(f"[唤醒] 去掉唤醒词前缀: '{prefix}' (距离={dist})")
+                    stripped = True
+                    break
+            if not stripped and wake_lower in text_lower:
                 idx = text_lower.index(wake_lower)
                 text = (text[:idx] + text[idx + len(self._wake_word):]).strip()
             _flog(f"[ASR] 去掉唤醒词后: {text}")
@@ -662,8 +777,14 @@ class VoicePipeline(QObject):
                 full_reply = "，".join(replies)
                 self.ai_response_stream.emit(full_reply)
                 self.ai_response_done.emit(full_reply)
-                # TTS 播放回复（检查是否静音）
-                if not self._tts_muted:
+                # 播放类意图（B站搜索）不朗读，直接回到 IDLE
+                all_play = all(
+                    isinstance(it, dict) and it.get("action") == "bilibili_search"
+                    for it in intents
+                )
+                if all_play:
+                    self._set_state(PipelineState.IDLE)
+                elif not self._tts_muted:
                     self._interrupted = False
                     self.notify_tts_start()
                     self._start_tts_workers()
@@ -928,7 +1049,8 @@ class VoicePipeline(QObject):
                 "- \"列出输入源/有哪些输入源\" → action=list_inputs\n\n"
                 "B站搜索规则：\n"
                 "- \"搜索/找/播放/听\" + \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n"
-                "- \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n\n"
+                "- \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n"
+                "- \"播放/听\" + 关键词（无需提到B站）→ action=bilibili_search, keyword=关键词\n\n"
                 "语义理解（重要）：\n"
                 "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -10\n"
                 "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +10\n"
@@ -1309,8 +1431,9 @@ class VoicePipeline(QObject):
             if peak > 0.01:
                 audio = audio * (0.9 / peak)
             segments, _ = self._whisper_model.transcribe(
-                audio, language="zh", beam_size=5,
+                audio, language="zh", beam_size=8,
                 vad_filter=True, vad_parameters=dict(min_silence_duration_ms=300),
+                condition_on_previous_text=False,
             )
             text = "".join(seg.text for seg in segments).strip()
             return text
