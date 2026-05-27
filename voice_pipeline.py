@@ -121,6 +121,15 @@ def parse_voice_command(text):
     if re.search(r'音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)', t):
         return {"action": "adjust", "control": "volume", "delta": -10}
 
+    # ── B站搜索 ──
+    m = re.search(r'(?:搜索|找|播放|听)(?:.*?)?(?:B站|哔哩哔哩|b站|bilibili)(?:.*?)?(.+)', t)
+    if not m:
+        m = re.search(r'(?:B站|哔哩哔哩|b站|bilibili)(?:.*?)?(?:搜索|找|播放|听)?(?:.*?)?(.+)', t)
+    if m:
+        keyword = m.group(1).strip()
+        if keyword and len(keyword) >= 2:
+            return {"action": "bilibili_search", "keyword": keyword}
+
     # ── 输入源切换 ──
     input_map = [
         ("hdmi", 0x10), ("hdmi-1", 0x10),
@@ -615,11 +624,11 @@ class VoicePipeline(QObject):
             self.error_occurred.emit(str(e))
             self._set_state(PipelineState.IDLE)
 
-    def _http_get_json(self, path):
+    def _http_get_json(self, path, timeout=5):
         """GET 请求 server 端点，返回 JSON dict"""
         url = self._server_url + path
         try:
-            resp = urlopen(url, timeout=5)
+            resp = urlopen(url, timeout=timeout)
             return json.loads(resp.read().decode("utf-8"))
         except Exception as e:
             _flog(f"[HTTP] GET {path} 失败: {e}")
@@ -637,6 +646,76 @@ class VoicePipeline(QObject):
         except Exception as e:
             _flog(f"[HTTP] POST {path} 失败: {e}")
             return None
+
+    # B站 wbi 签名混钥表
+    _BILI_MIXIN_TAB = [
+        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
+        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
+        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
+        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
+    ]
+
+    def _bilibili_search_and_play(self, keyword):
+        """直接调用B站API搜索视频，打开第一个结果，返回播报文字"""
+        import hashlib, subprocess
+        from urllib.parse import quote, urlencode
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.bilibili.com",
+        }
+
+        # 1. 获取 wbi 签名密钥
+        nav_req = Request("https://api.bilibili.com/x/web-interface/nav", headers=headers)
+        nav_resp = urlopen(nav_req, timeout=8)
+        nav_data = json.loads(nav_resp.read().decode("utf-8"))
+        wbi_img = nav_data["data"]["wbi_img"]
+        img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
+        sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
+
+        # 2. wbi 签名
+        orig = img_key + sub_key
+        mixin_key = "".join([orig[i] for i in self._BILI_MIXIN_TAB])[:32]
+        params = {"search_type": "video", "keyword": keyword, "page": 1, "page_size": 5}
+        params["wts"] = int(__import__("time").time())
+        params = dict(sorted(params.items()))
+        query = urlencode(params)
+        params["w_rid"] = hashlib.md5((query + mixin_key).encode()).hexdigest()
+
+        # 3. 搜索请求
+        api_url = f"https://api.bilibili.com/x/web-interface/wbi/search/type?{urlencode(params)}"
+        req = Request(api_url, headers=headers)
+        resp = urlopen(req, timeout=10)
+        data = json.loads(resp.read().decode("utf-8"))
+
+        results = []
+        if data.get("code") == 0 and data.get("data", {}).get("result"):
+            for item in data["data"]["result"][:3]:
+                title = item.get("title", "").replace('<em class="keyword">', "").replace("</em>", "")
+                author = item.get("author", "")
+                bvid = item.get("bvid", "")
+                results.append({"title": title, "author": author, "bvid": bvid})
+
+        if not results:
+            # 无结果，打开搜索页
+            search_url = f"https://search.bilibili.com/video?keyword={quote(keyword)}"
+            subprocess.Popen(["cmd", "/c", "start", "", search_url],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=subprocess.CREATE_NO_WINDOW)
+            return f"未找到相关视频，已打开B站搜索页：{keyword}"
+
+        # 4. 打开第一个视频
+        video_url = f"https://www.bilibili.com/video/{results[0]['bvid']}"
+        subprocess.Popen(["cmd", "/c", "start", "", video_url],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+
+        # 5. 构造播报文字
+        parts = [f"为您找到{len(results)}个视频"]
+        for i, v in enumerate(results):
+            parts.append(f"第{i+1}个：{v['title']}，作者{v['author']}")
+        parts.append(f"正在为您播放：{results[0]['title']}")
+        return "，".join(parts)
 
     def _count_monitors(self):
         """返回 DDC/CI 物理监视器数量"""
@@ -738,6 +817,17 @@ class VoicePipeline(QObject):
             except Exception as e:
                 return f"输入源切换失败：{e}"
 
+        # ── B站搜索 ───────────────────────────────────────────
+        if action == "bilibili_search":
+            keyword = intent.get("keyword", "")
+            if not keyword:
+                return "搜索关键词无效"
+            try:
+                return self._bilibili_search_and_play(keyword)
+            except Exception as e:
+                _flog(f"[B站] 搜索异常: {e}")
+                return f"B站搜索失败：{e}"
+
         # ── 常规亮度/对比度/色温/音量 ──────────────────────────────
 
         # 读取 displayType
@@ -819,14 +909,19 @@ class VoicePipeline(QObject):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
         try:
             prompt = (
-                "你是显示器控制意图识别器。判断用户的话是否包含亮度、音量、对比度、色温、输入源切换控制意图。\n\n"
-                "规则：\n"
+                "你是意图识别器。判断用户的话是否包含以下意图：\n"
+                "1. 显示器控制：亮度、音量、对比度、色温、输入源切换\n"
+                "2. B站视频搜索：提到B站/哔哩哔哩/bilibili的搜索、播放、找视频\n\n"
+                "显示器控制规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
                 "- \"调高/调大/亮一点\"（无数字）→ action=adjust, delta=±10\n"
                 "- \"最亮/最暗/最大/最小/静音\" → action=set, value=极值\n"
                 "- \"切换到HDMI/切到DisplayPort/切HDMI/切DP\" → action=switch_input, code=0x10/0x0F/0x0F\n"
                 "- \"列出输入源/有哪些输入源\" → action=list_inputs\n\n"
+                "B站搜索规则：\n"
+                "- \"搜索/找/播放/听\" + \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n"
+                "- \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n\n"
                 "语义理解（重要）：\n"
                 "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -10\n"
                 "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +10\n"
@@ -839,9 +934,10 @@ class VoicePipeline(QObject):
                 "- 涉及\"屏幕/显示器/亮度/音量/声音/对比度/色温\"的抱怨或请求都算控制意图\n\n"
                 "复合意图：用户可能同时提到多个控制项，返回JSON数组。\n\n"
                 "输出格式：\n"
-                "单个意图：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"
-                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10},{\"action\":\"adjust\",\"control\":\"volume\",\"delta\":10}]\n"
-                "没有控制意图：null\n"
+                "显示器控制：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"
+                "B站搜索：{\"action\":\"bilibili_search\",\"keyword\":\"关键词\"}\n"
+                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10},{\"action\":\"bilibili_search\",\"keyword\":\"xxx\"}]\n"
+                "没有命中意图：null\n"
                 "只输出JSON或null，不解释。\n\n"
                 f"用户：{text}"
             )
@@ -872,12 +968,20 @@ class VoicePipeline(QObject):
                 return None
 
             parsed = json.loads(content)
+
+            def _valid_intent(i):
+                if not isinstance(i, dict) or "action" not in i:
+                    return False
+                if i["action"] == "bilibili_search":
+                    return "keyword" in i
+                return "control" in i
+
             # 支持单个意图或多个意图
-            if isinstance(parsed, dict) and "control" in parsed and "action" in parsed:
+            if isinstance(parsed, dict) and _valid_intent(parsed):
                 _flog(f"[意图LLM] 命中: {[parsed]}")
                 return [parsed]
             elif isinstance(parsed, list):
-                intents = [i for i in parsed if isinstance(i, dict) and "control" in i and "action" in i]
+                intents = [i for i in parsed if _valid_intent(i)]
                 if intents:
                     _flog(f"[意图LLM] 命中: {intents}")
                     return intents
