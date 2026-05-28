@@ -130,6 +130,30 @@ def parse_voice_command(text):
         if keyword and len(keyword) >= 2:
             return {"action": "bilibili_search", "keyword": keyword}
 
+    # ── 桌面应用控制 ──
+    if re.search(r'(?:桌面|电脑|系统|现在).*(?:有哪些|有什么|安装了|已安装|打开的|运行的|正在运行).*(?:app|应用|软件|程序)', t):
+        return {"action": "list_apps"}
+    if re.search(r'(?:有哪些|什么|查看|列出|看看).*(?:app|应用|软件|程序)', t):
+        return {"action": "list_apps"}
+
+    m = re.search(r'(?:打开|启动|运行|开启|运行一下|打开一下|启动一下)\s*(.+)', t)
+    if m:
+        app_name = m.group(1).strip()
+        if app_name and len(app_name) >= 1:
+            return {"action": "open_app", "app_name": app_name}
+
+    m = re.search(r'(?:关闭|退出|结束|关掉|杀掉|杀死)\s*(.+)', t)
+    if m:
+        app_name = m.group(1).strip()
+        if app_name and len(app_name) >= 1:
+            return {"action": "close_app", "app_name": app_name}
+
+    m = re.search(r'(?:切换到?|切到?|换到?)\s*(.+)', t)
+    if m:
+        app_name = m.group(1).strip()
+        if app_name and len(app_name) >= 1:
+            return {"action": "switch_app", "app_name": app_name}
+
     # ── 输入源切换 ──
     input_map = [
         ("hdmi", 0x10), ("hdmi-1", 0x10),
@@ -828,6 +852,55 @@ class VoicePipeline(QObject):
                 _flog(f"[B站] 搜索异常: {e}")
                 return f"B站搜索失败：{e}"
 
+        # ── 桌面应用控制 ────────────────────────────────────────
+        if action == "list_apps":
+            try:
+                from app_manager import get_apps, list_gui_apps
+                installed = get_apps()
+                running = {name.lower().replace(".exe", "") for name, _ in list_gui_apps()}
+                if not installed:
+                    return "未检测到已安装的应用"
+                names = []
+                for app_name in sorted(installed.keys()):
+                    tag = "（已打开）" if app_name in running else ""
+                    names.append(f"{app_name}{tag}")
+                return f"共有{len(names)}个应用：{'、'.join(names)}"
+            except Exception as e:
+                return f"获取应用列表失败：{e}"
+
+        if action == "open_app":
+            app_name = intent.get("app_name", "")
+            if not app_name:
+                return "未指定应用名称"
+            try:
+                from app_manager import launch_app
+                ok, msg = launch_app(app_name)
+                return msg
+            except Exception as e:
+                return f"打开应用失败：{e}"
+
+        if action == "close_app":
+            app_name = intent.get("app_name", "")
+            if not app_name:
+                return "未指定应用名称"
+            try:
+                from app_manager import close_app
+                ok, msg = close_app(app_name)
+                return msg
+            except Exception as e:
+                return f"关闭应用失败：{e}"
+
+        if action == "switch_app":
+            app_name = intent.get("app_name", "")
+            if not app_name:
+                return "未指定应用名称"
+            try:
+                from app_manager import switch_to_app
+                ok, msg = switch_to_app(app_name)
+                return msg
+            except Exception as e:
+                return f"切换应用失败：{e}"
+
         # ── 常规亮度/对比度/色温/音量 ──────────────────────────────
 
         # 读取 displayType
@@ -911,7 +984,8 @@ class VoicePipeline(QObject):
             prompt = (
                 "你是意图识别器。判断用户的话是否包含以下意图：\n"
                 "1. 显示器控制：亮度、音量、对比度、色温、输入源切换\n"
-                "2. B站视频搜索：提到B站/哔哩哔哩/bilibili的搜索、播放、找视频\n\n"
+                "2. B站视频搜索：提到B站/哔哩哔哩/bilibili的搜索、播放、找视频\n"
+                "3. 桌面应用控制：打开/关闭/切换桌面应用\n\n"
                 "显示器控制规则：\n"
                 "- \"调到/设为/调成\" + 数字 → action=set, value=数字（绝对值）\n"
                 "- \"调高/调低/调大/调小\" + 数字 → action=adjust, delta=±数字（相对值）\n"
@@ -922,6 +996,11 @@ class VoicePipeline(QObject):
                 "B站搜索规则：\n"
                 "- \"搜索/找/播放/听\" + \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n"
                 "- \"B站/哔哩哔哩\" + 关键词 → action=bilibili_search, keyword=关键词\n\n"
+                "桌面应用控制规则：\n"
+                "- \"打开/启动/运行\" + 应用名 → action=open_app, app_name=应用名\n"
+                "- \"关闭/退出/结束\" + 应用名 → action=close_app, app_name=应用名\n"
+                "- \"切换到/切到\" + 应用名 → action=switch_app, app_name=应用名\n"
+                "- \"桌面有哪些应用/有哪些软件/正在运行什么\" → action=list_apps\n\n"
                 "语义理解（重要）：\n"
                 "- \"刺眼/晃眼/亮瞎/闪瞎/眼睛疼/太高/高了\" → 亮度过高，adjust brightness -10\n"
                 "- \"太暗/看不清/黑乎乎/比较低/低了/暗了\" → 亮度过低，adjust brightness +10\n"
@@ -936,7 +1015,8 @@ class VoicePipeline(QObject):
                 "输出格式：\n"
                 "显示器控制：{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10}\n"
                 "B站搜索：{\"action\":\"bilibili_search\",\"keyword\":\"关键词\"}\n"
-                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10},{\"action\":\"bilibili_search\",\"keyword\":\"xxx\"}]\n"
+                "应用控制：{\"action\":\"open_app\",\"app_name\":\"微信\"}\n"
+                "多个意图：[{\"action\":\"adjust\",\"control\":\"brightness\",\"delta\":10},{\"action\":\"open_app\",\"app_name\":\"微信\"}]\n"
                 "没有命中意图：null\n"
                 "只输出JSON或null，不解释。\n\n"
                 f"用户：{text}"
@@ -972,8 +1052,13 @@ class VoicePipeline(QObject):
             def _valid_intent(i):
                 if not isinstance(i, dict) or "action" not in i:
                     return False
-                if i["action"] == "bilibili_search":
+                action = i["action"]
+                if action == "bilibili_search":
                     return "keyword" in i
+                if action in ("open_app", "close_app", "switch_app"):
+                    return "app_name" in i
+                if action in ("list_apps", "list_inputs"):
+                    return True
                 return "control" in i
 
             # 支持单个意图或多个意图
