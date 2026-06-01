@@ -1,6 +1,20 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
+
+# Build artifacts
 build_widget/
 dist/
+*.egg-info/
+
+# Runtime
 *.log
 .native_state.json
+
+# Dead/empty experiment directories
+reshade_inject/
+
+# IDE
+.vscode/
+.idea/

@@ -148,13 +148,7 @@ def parse_voice_command(text):
         if app_name and len(app_name) >= 1:
             return {"action": "close_app", "app_name": app_name}
 
-    m = re.search(r'(?:切换到?|切到?|换到?)\s*(.+)', t)
-    if m:
-        app_name = m.group(1).strip()
-        if app_name and len(app_name) >= 1:
-            return {"action": "switch_app", "app_name": app_name}
-
-    # ── 输入源切换 ──
+    # ── 输入源切换（必须在 switch_app 之前，否则 "切到HDMI" 会被误判为应用）──
     input_map = [
         ("hdmi", 0x10), ("hdmi-1", 0x10),
         ("displayport", 0x0F), ("dp", 0x0F),
@@ -167,6 +161,12 @@ def parse_voice_command(text):
             return {"action": "switch_input", "code": code}
     if re.search(r'(?:切换|切到?)输入源', t):
         return {"action": "list_inputs"}
+
+    m = re.search(r'(?:切换到?|切到?|换到?)\s*(.+)', t)
+    if m:
+        app_name = m.group(1).strip()
+        if app_name and len(app_name) >= 1:
+            return {"action": "switch_app", "app_name": app_name}
 
     return None
 

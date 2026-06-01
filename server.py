@@ -115,7 +115,11 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(data)
             return
+        # 文件系统回退：仅在 get_static_dir() 返回具体目录时启用
         static_dir = get_static_dir()
+        if not static_dir:
+            self.send_error(404, "Static file not found (embedded only)")
+            return
         filepath = os.path.normpath(os.path.join(static_dir, path.lstrip("/")))
         base_dir = os.path.dirname(os.path.abspath(__file__))
         if not (filepath.startswith(base_dir) or filepath.startswith(static_dir)):

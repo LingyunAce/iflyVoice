@@ -1,11 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
+# VoiceAI.spec — PyInstaller 打包配置
+# 运行方式（在项目根目录）：pyinstaller build/VoiceAI.spec
+# 路径使用相对路径，可在不同机器/位置复用
 
+import os
+# PyInstaller 运行 spec 时，SPEC 变量指向该 .spec 文件本身
+# spec 位于 build/，所以项目根 = build/ 的父目录
+PROJECT_ROOT = os.path.normpath(os.path.join(os.path.dirname(SPEC), '..'))
 
 a = Analysis(
-    ['widget.py'],
-    pathex=[],
+    [os.path.join(PROJECT_ROOT, 'widget.py')],
+    pathex=[PROJECT_ROOT],
     binaries=[],
-    datas=[('C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\server.py', '.'), ('C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\embedded_static.py', '.'), ('C:\\Users\\a1318\\WorkBuddy\\xunfei_yuyin\\iflyVoice\\silero_vad.onnx', '.')],
+    datas=[
+        (os.path.join(PROJECT_ROOT, 'server.py'), '.'),
+        (os.path.join(PROJECT_ROOT, 'embedded_static.py'), '.'),
+        (os.path.join(PROJECT_ROOT, 'silero_vad.onnx'), '.'),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

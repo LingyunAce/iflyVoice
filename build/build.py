@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""Build VoiceAI widget exe."""
+"""Build VoiceAI widget exe.
+
+运行方式（在项目根目录）：
+    python build/build.py
+    # 或在 build/ 目录下：
+    cd build && python build.py
+"""
 import os, sys, subprocess, shutil
 
+# 项目根 = build/ 的父目录（无论从哪里运行都正确解析）
+PROJECT_DIR = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+# 优先使用固定路径的 Python，缺失时回退到当前 Python
 PYTHON = r"C:\Users\a1318\AppData\Local\Programs\Python\Python311\python.exe"
 if not os.path.exists(PYTHON):
     PYTHON = sys.executable
 
-PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 DIST_DIR = os.path.join(PROJECT_DIR, "dist")
 BUILD_DIR = os.path.join(PROJECT_DIR, "build_widget")
 EXE_PATH = os.path.join(DIST_DIR, "VoiceAI.exe")
@@ -16,9 +25,12 @@ for d in [DIST_DIR, BUILD_DIR]:
     if os.path.exists(d):
         shutil.rmtree(d, ignore_errors=True)
 
-src = os.path.abspath("server.py")
-static = os.path.abspath("embedded_static.py")
-vad_onnx = os.path.abspath("silero_vad.onnx")
+# 资源路径（相对项目根）
+WIDGET_PY = os.path.join(PROJECT_DIR, "widget.py")
+SERVER_PY = os.path.join(PROJECT_DIR, "server.py")
+STATIC_PY = os.path.join(PROJECT_DIR, "embedded_static.py")
+VAD_ONNX = os.path.join(PROJECT_DIR, "silero_vad.onnx")
+
 EXCLUDES = [
     # 大包，项目不依赖
     "cv2", "opencv-python",
@@ -54,13 +66,13 @@ cmd = [
     "--distpath", DIST_DIR,
     "--workpath", BUILD_DIR,
     "--clean",
-    "--add-data", f"{src};.",
-    "--add-data", f"{static};.",
-    "--add-data", f"{vad_onnx};.",
+    "--add-data", f"{SERVER_PY};.",
+    "--add-data", f"{STATIC_PY};.",
+    "--add-data", f"{VAD_ONNX};.",
 ]
 for mod in EXCLUDES:
     cmd += ["--exclude-module", mod]
-cmd.append("widget.py")
+cmd.append(WIDGET_PY)
 print("Running PyInstaller...")
 r = subprocess.run(cmd)
 if r.returncode != 0:
