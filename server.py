@@ -42,6 +42,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
+        if self.path.startswith("/health"):
+            self._send_json(200, {"ok": True, "version": "0.2.0-linux", "platform": "linux-aarch64"})
+            return
         if self.path.startswith("/exit"):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -53,14 +56,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_config("GET")
         elif self.path.startswith("/ollama/"):
             self._proxy("GET")
-        elif self.path.startswith("/i2c/"):
-            self._handle_i2c()
         elif self.path.startswith("/native/"):
             self._handle_native("GET")
-        elif self.path.startswith("/ddcci/"):
-            self._handle_ddcci("GET")
-        elif self.path.startswith("/bilibili/"):
-            self._handle_bilibili()
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
         else:
@@ -71,16 +68,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_config("POST")
         elif self.path.startswith("/ollama/"):
             self._proxy("POST")
-        elif self.path.startswith("/i2c/"):
-            self._handle_i2c()
-        elif self.path.startswith("/sensevoice/"):
-            self._handle_sensevoice()
         elif self.path.startswith("/native/"):
             self._handle_native("POST")
-        elif self.path.startswith("/ddcci/"):
-            self._handle_ddcci("POST")
-        elif self.path.startswith("/bilibili/"):
-            self._handle_bilibili()
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
         else:
@@ -213,109 +202,6 @@ class Handler(BaseHTTPRequestHandler):
             buf += ch
             if buf.endswith(b"\r\n"): return buf[:-2].decode("utf-8", errors="replace")
 
-    def _handle_i2c(self):
-        path = self.path.split("?")[0]
-        if path == "/i2c/adb/status" or path == "/i2c/status":
-            self._check_adb_connection(); return
-        if path == "/i2c/i2cset" or path == "/i2c/command":
-            cl = int(self.headers.get("Content-Length", 0))
-            if cl <= 0: return self._send_json(400, {"success": False, "error": "Missing request body"})
-            try: body = json.loads(self.rfile.read(cl).decode("utf-8"))
-            except Exception as e: return self._send_json(400, {"success": False, "error": f"Invalid JSON: {e}"})
-            self._execute_i2c_command(body); return
-        self._send_json(404, {"success": False, "error": f"Unknown I2C endpoint: {path}"})
-
-    def _check_adb_connection(self):
-        try:
-            result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=10,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            lines = result.stdout.strip().split("\n")
-            devices = [l for l in lines[1:] if l.strip() and "device" in l]
-            self._send_json(200, {"connected": len(devices) > 0, "deviceCount": len(devices), "devices": devices, "output": result.stdout})
-        except FileNotFoundError:
-            self._send_json(200, {"connected": False, "error": "ADB not found in PATH"})
-        except subprocess.TimeoutExpired:
-            self._send_json(200, {"connected": False, "error": "ADB command timed out"})
-        except Exception as e:
-            self._send_json(200, {"connected": False, "error": str(e)})
-
-    def _execute_i2c_command(self, body):
-        cmd_type = body.get("command", "i2cset")
-        args = body.get("args", [])
-        if cmd_type == "ddc_check":
-            self._check_ddc_ci_support(); return
-        if cmd_type == "i2cset":
-            adb_cmd = ["adb", "shell", "i2cset"] + args
-        else:
-            adb_cmd = ["adb", "shell"] + [cmd_type] + args
-        try:
-            _log(f"[I2C] Executing: {' '.join(adb_cmd)}")
-            result = subprocess.run(adb_cmd, capture_output=True, text=True, timeout=30,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            success = result.returncode == 0
-            resp = {"success": success, "command": " ".join(adb_cmd), "returnCode": result.returncode,
-                    "stdout": (result.stdout or "").strip(), "stderr": (result.stderr or "").strip()}
-            self._send_json(200 if success else 502, resp)
-        except FileNotFoundError:
-            self._send_json(502, {"success": False, "error": "ADB executable not found in PATH"})
-        except subprocess.TimeoutExpired:
-            self._send_json(504, {"success": False, "error": "Command execution timed out (30s)"})
-        except Exception as e:
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _check_ddc_ci_support(self):
-        try:
-            test_cmd = ["adb", "shell", "i2cget", "-y", "-f", "0x37", "0x37", "0x00", "b"]
-            _log(f"[DDC/CI] 检测中: {' '.join(test_cmd)}")
-            result = subprocess.run(test_cmd, capture_output=True, text=True, timeout=10,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            if result.returncode == 0 and result.stdout.strip():
-                self._send_json(200, {"supported": True, "detail": f"VCP readable: {result.stdout.strip()[:20]}"})
-            else:
-                detect_cmd = ["adb", "shell", "i2cdetect", "-y", "-f", "0x37"]
-                det_result = subprocess.run(detect_cmd, capture_output=True, text=True, timeout=10,
-                                             creationflags=subprocess.CREATE_NO_WINDOW)
-                output = (det_result.stdout or "").strip()
-                has_devices = any(c in output for c in ['30', '31', '36', '37', '49', '50'])
-                if has_devices:
-                    self._send_json(200, {"supported": True, "detail": "I2C bus detected"})
-                else:
-                    err = (result.stderr or det_result.stderr or "No response").strip()[:60]
-                    self._send_json(200, {"supported": False, "reason": err})
-        except FileNotFoundError:
-            self._send_json(200, {"supported": False, "reason": "ADB not found"})
-        except Exception as e:
-            self._send_json(200, {"supported": False, "reason": str(e)[:80]})
-
-    def _handle_ddcci(self, method):
-        path = self.path.split("?")[0].split("#")[0]
-        endpoint = path.replace("/ddcci/", "", 1).strip("/")
-        body = {}
-        if method == "POST":
-            cl = int(self.headers.get("Content-Length", 0))
-            if cl > 0:
-                try: body = json.loads(self.rfile.read(cl).decode("utf-8"))
-                except Exception: return self._send_json(400, {"success": False, "error": "Invalid JSON"})
-        handlers = {
-            "status":        ("GET",  lambda: self._ddcci_status()),
-            "brightness":    ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x10, "brightness")),
-            "contrast":      ("POST", lambda b=body: self._ddcci_set_vcp(b, 0x12, "contrast")),
-            "contrast_read": ("GET",  lambda: self._ddcci_get_vcp(0x12, "contrast")),
-            "color_temp":    ("POST", lambda b=body: self._ddcci_set_color_temp(b)),
-            "monitor_count": ("GET",  lambda: self._ddcci_monitor_count()),
-            "input_sources": ("GET",  lambda: self._ddcci_input_sources()),
-            "input":         ("ALL",  lambda b=body: self._ddcci_set_input(b) if method == "POST" else self._ddcci_get_input()),
-        }
-        if endpoint not in handlers:
-            return self._send_json(404, {"success": False, "error": f"Unknown DDC/CI endpoint: {endpoint}"})
-        allowed, handler = handlers[endpoint]
-        if allowed != "ALL" and method != allowed:
-            return self._send_json(405, {"error": f"{method} not allowed for /ddcci/{endpoint}"})
-        try: handler()
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] /{endpoint} error: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
     def _handle_config(self, method):
         path = self.path.split("?")[0]
         endpoint = path.replace("/config/", "", 1).strip("/")
@@ -328,11 +214,6 @@ class Handler(BaseHTTPRequestHandler):
             _OLLAMA_CONFIG["host"] = host; _OLLAMA_CONFIG["port"] = int(port)
             _log(f"[Config] Ollama updated: {host}:{port} model={model}")
             self._send_json(200, {"success": True, "host": host, "port": port, "model": model})
-        elif endpoint == "sensevoice" and method == "POST":
-            url = body.get("base_url", "")
-            Handler.SENSEVOICE_CONFIG["base_url"] = url
-            _log(f"[Config] SenseVoice updated: {url}")
-            self._send_json(200, {"success": True, "base_url": url})
         elif endpoint == "displayType":
             try:
                 if method == "GET":
@@ -352,506 +233,7 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"success": False, "error": f"Unknown config: {endpoint}"})
 
-    @staticmethod
-    def _get_physical_monitor():
-        import ctypes
-        from ctypes import windll, byref, c_ulong, c_uint, c_ubyte, c_wchar, Structure, c_long, POINTER, WINFUNCTYPE
-
-        class PHYSICAL_MONITOR(Structure):
-            _fields_ = [("handle", c_ulong), ("description", c_wchar * 128)]
-        class POINT(Structure):
-            _fields_ = [("x", c_long), ("y", c_long)]
-        class RECT(Structure):
-            _fields_ = [("left", c_long), ("top", c_long), ("right", c_long), ("bottom", c_long)]
-
-        user32 = windll.user32; dxva2 = windll.dxva2
-        MON_DEFAULT_NEAREST = 0x00000002
-        hmon = None; src = ""
-
-        pt = POINT(100, 100); hmon = user32.MonitorFromPoint(byref(pt), MON_DEFAULT_NEAREST)
-        if hmon: src = "MonitorFromPoint(POINT(100,100), MON_DEFAULT_NEAREST)"
-        else:
-            dw = user32.GetDesktopWindow(); hmon = user32.MonitorFromWindow(dw, 0)
-            if hmon: src = "MonitorFromWindow(Desktop)"
-            else:
-                pt0 = POINT(0, 0); hmon = user32.MonitorFromPoint(byref(pt0), MON_DEFAULT_NEAREST)
-                if hmon: src = "MonitorFromPoint(POINT(0,0), MON_DEFAULT_NEAREST)"
-                else:
-                    _found_hmons = []
-                    _cb_type = WINFUNCTYPE(c_uint, c_ulong, c_ulong, POINTER(RECT), c_uint)
-                    def _enum_cb(hm, hdc, lprect, lparam): _found_hmons.append(int(hm)); return 1
-                    _cb = _cb_type(_enum_cb)
-                    user32.EnumDisplayMonitors(0, None, _cb, 0)
-                    if _found_hmons: hmon = _found_hmons[0]; src = "EnumDisplayMonitors[#0]"
-        if not hmon: return None, "所有方式均无法获取 HMONITOR"
-
-        _log(f"[DDC/CI] HMON={hex(hmon)} (via {src})")
-
-        num_phys = c_uint()
-        if not dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, byref(num_phys)):
-            return None, "GetNumberOfPhysicalMonitorsFromHMONITOR failed"
-        if num_phys.value == 0: return None, "No physical monitors"
-        phys_arr = (PHYSICAL_MONITOR * num_phys.value)()
-        if not dxva2.GetPhysicalMonitorsFromHMONITOR(hmon, num_phys.value, byref(phys_arr)):
-            return None, "GetPhysicalMonitorsFromHMONITOR failed"
-        handles = [int(p.handle) for p in phys_arr]
-        _log(f"[DDC/CI] 发现 {len(handles)} 个物理监视器: {', '.join(hex(h) for h in handles)}")
-
-        descs = [p.description.strip() for p in phys_arr]
-        for idx, (hPhys, desc) in enumerate(zip(handles, descs)):
-            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
-            try:
-                ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x00, byref(vct), byref(cur), byref(mx))
-                if ret:
-                    mid = "0x%04X" % cur.value
-                    name = desc if desc else f"显示器({mid})"
-                    _log(f"[DDC/CI] OK PhysMon#{idx} Handle={hex(hPhys)} MfgID={mid} Desc='{desc}' SELECTED")
-                    return hPhys, name, None
-            except Exception as e: _log(f"[DDC/CI] X PhysMon#{idx} Handle={hex(hPhys)} VCP0x00 err={e}")
-        for idx, (hPhys, desc) in enumerate(zip(handles, descs)):
-            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
-            try:
-                ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x10, byref(vct), byref(cur), byref(mx))
-                if ret:
-                    name = desc if desc else f"外置显示器"
-                    _log(f"[DDC/CI] OK PhysMon#{idx} Handle={hex(hPhys)} Brightness={cur.value} (VCP 0x10 fallback) SELECTED")
-                    return hPhys, name, None
-            except Exception as e: _log(f"[DDC/CI] X PhysMon#{idx} Handle={hex(hPhys)} VCP0x10 err={e}")
-        return None, None, f"All {len(handles)} phys-mon tested, none support DDC/CI"
-
-    def _ddcci_monitor_count(self):
-        """返回 DDC/CI 可用的物理监视器数量"""
-        import ctypes
-        from ctypes import windll, byref, c_uint, c_ulong, Structure, POINTER, WINFUNCTYPE
-        class PHYSICAL_MONITOR(Structure):
-            _fields_ = [("handle", c_ulong), ("description", ctypes.c_wchar * 128)]
-        class RECT(Structure):
-            _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long), ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
-
-        total = 0
-        user32 = windll.user32; dxva2 = windll.dxva2
-        _found = []
-        cb_type = WINFUNCTYPE(c_uint, c_ulong, c_ulong, POINTER(RECT), c_uint)
-        def _enum_cb(hm, hdc, lprect, lparam): _found.append(hm); return 1
-        user32.EnumDisplayMonitors(0, None, cb_type(_enum_cb), 0)
-
-        for hmon in _found:
-            num_phys = c_uint()
-            if dxva2.GetNumberOfPhysicalMonitorsFromHMONITOR(hmon, byref(num_phys)):
-                total += num_phys.value
-
-        self._send_json(200, {"count": total})
-
-    def _ddcci_status(self):
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None:
-            return self._send_json(200, {"connected": False, "supported": False, "reason": err or "无法获取物理显示器句柄"})
-        import ctypes
-        from ctypes import windll, byref, c_ubyte, c_uint
-        try:
-            dxva2 = windll.dxva2
-            vct = c_ubyte(); cur_val = c_uint(); max_val = c_uint()
-            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x00, byref(vct), byref(cur_val), byref(max_val))
-            if ret:
-                mid_hex = f"0x{cur_val.value:04X}"
-                _log(f"[DDC/CI] ✓ ManufacturerID={mid_hex} Name='{mon_name}'")
-                self._send_json(200, {"connected": True, "supported": True, "manufacturerId": mid_hex, "monitorName": mon_name or ""})
-            else:
-                ret2 = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x10, byref(c_ubyte()), byref(c_uint()), byref(c_uint()))
-                if ret2:
-                    _log("[DDC/CI] ✓ VCP brightness readable")
-                    self._send_json(200, {"connected": True, "supported": True, "detail": "VCP brightness readable", "monitorName": mon_name or ""})
-                else:
-                    _log("[DDC/CI] ✗ DDC/CI no response")
-                    self._send_json(200, {"connected": True, "supported": False, "reason": "DDC/CI no response"})
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] 异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(200, {"connected": False, "supported": False, "reason": str(e)[:120]})
-
-    def _ddcci_set_vcp(self, body, vcp_code, control_name):
-        value = int(body.get("value", 50))
-        value = max(0, min(100, value))
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
-        try:
-            from ctypes import windll
-            dxva2 = windll.dxva2
-            ret = dxva2.SetVCPFeature(hPhys, vcp_code, value)
-            if ret:
-                _log(f"[DDC/CI] ✓ SetVCPFeature 0x{vcp_code:02X}({control_name})={value}% monitor='{mon_name}'")
-                self._send_json(200, {"success": True, control_name: value, "vcpCode": f"0x{vcp_code:02X}", "monitorName": mon_name or ""})
-            else:
-                _log(f"[DDC/CI] ✗ SetVCPFeature 0x{vcp_code:02X}({control_name})={value} failed")
-                self._send_json(200, {"success": False, "error": f"SetVCPFeature 0x{vcp_code:02X} failed"})
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] SetVCPFeature 异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _ddcci_get_vcp(self, vcp_code, control_name):
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None: return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
-        try:
-            from ctypes import windll
-            dxva2 = windll.dxva2
-            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
-            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, vcp_code, byref(vct), byref(cur), byref(mx))
-            if ret:
-                self._send_json(200, {"success": True, control_name: int(cur.value), "max": int(mx.value), "vcpCode": f"0x{vcp_code:02X}", "monitorName": mon_name or ""})
-            else:
-                self._send_json(200, {"success": False, "error": f"VCP 0x{vcp_code:02X} read failed"})
-        except Exception as e:
-            _log(f"[DDC/CI] GetVCP 0x{vcp_code:02X} 异常: {e}")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _ddcci_set_color_temp(self, body):
-        """DDC/CI 色温设置，VCP 0x14，值 0-100 映射到 3000K-10000K"""
-        value = int(body.get("value", 50))
-        value = max(0, min(100, value))
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None:
-            return self._send_json(200, {"success": False, "error": err or "无法获取物理显示器句柄"})
-        try:
-            from ctypes import windll
-            dxva2 = windll.dxva2
-            ret = dxva2.SetVCPFeature(hPhys, 0x14, value)
-            if ret:
-                kelvin = 3000 + int(value * 70)
-                _log(f"[DDC/CI] ✓ SetVCPFeature 0x14(color_temp)={value}% (~{kelvin}K) monitor='{mon_name}'")
-                self._send_json(200, {"success": True, "colorTemp": value, "kelvin": kelvin, "vcpCode": "0x14", "monitorName": mon_name or ""})
-            else:
-                _log(f"[DDC/CI] ✗ SetVCPFeature 0x14(color_temp)={value} failed")
-                self._send_json(200, {"success": False, "error": "SetVCPFeature 0x14 failed，当前显示器可能不支持DDC/CI色温调节"})
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] color_temp 异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    # ── 输入源 ─────────────────────────────────────────────────────────────────
-
-    _INPUT_SOURCE_NAMES = {
-        0x01: "VGA (Analog)",
-        0x02: "DVI-1",
-        0x03: "DVI-2",
-        0x04: "Composite",
-        0x05: "S-Video",
-        0x06: "Tuner-TV",
-        0x07: "Component",
-        0x0F: "DisplayPort-1",
-        0x10: "HDMI-1",
-        0x11: "HDMI-1 (Alt)",
-        0x12: "HDMI-2",
-        0x13: "HDMI-3",
-        0x14: "HDMI-4",
-        0x15: "USB-C",
-        0x16: "Thunderbolt",
-        0x1B: "USB-C (Alt)",
-        0x1D: "DP over USB-C",
-    }
-
-    @staticmethod
-    def _input_source_name(code):
-        name = Handler._INPUT_SOURCE_NAMES.get(code)
-        return name or f"Unknown (0x{code:02X})"
-
-    def _ddcci_input_sources(self):
-        """GET /ddcci/input_sources — 枚举显示器支持的输入源"""
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None:
-            return self._send_json(200, {"supported": False, "reason": err or "无法获取显示器"})
-        import ctypes
-        from ctypes import windll, byref, c_ubyte, c_uint
-        try:
-            dxva2 = windll.dxva2
-            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
-            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct), byref(cur), byref(mx))
-            if not ret:
-                return self._send_json(200, {"supported": False, "reason": "显示器不支持 VCP 0x60（输入源）"})
-            current = cur.value
-            max_code = mx.value  # max input source code
-            # max=3 且 current 高字节非零 → 扩展编码（Android/内置系统源）
-            if max_code == 3 and (current >> 8) != 0:
-                actual_code = current & 0xFF
-                sources = [
-                    {"code": actual_code, "encoding": "extended", "name": "Android/内置系统", "is_current": True},
-                    {"code": 0x03, "encoding": "standard", "name": "HDMI-2", "is_current": False},
-                    {"code": 0x04, "encoding": "standard", "name": "HDMI-3", "is_current": False},
-                ]
-            else:
-                actual_code = current & 0xFF
-                sources = []
-                for code in range(1, max_code + 1):
-                    sources.append({
-                        "code": code,
-                        "encoding": "standard",
-                        "name": Handler._input_source_name(code),
-                        "is_current": actual_code == code,
-                    })
-            self._send_json(200, {
-                "supported": True,
-                "current": current,
-                "current_name": Handler._input_source_name(current & 0xFF),
-                "extended_encoding": max_code == 3 and (current >> 8) != 0,
-                "encoding_type": current >> 8 if max_code == 3 and (current >> 8) != 0 else 0,
-                "sources": sources,
-                "monitorName": mon_name or "",
-            })
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] input_sources 异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _ddcci_get_input(self):
-        """GET /ddcci/input — 获取当前输入源"""
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None:
-            return self._send_json(200, {"supported": False, "reason": err or "无法获取显示器"})
-        import ctypes
-        from ctypes import windll, byref, c_ubyte, c_uint
-        try:
-            dxva2 = windll.dxva2
-            vct = c_ubyte(); cur = c_uint(); mx = c_uint()
-            ret = dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct), byref(cur), byref(mx))
-            if ret:
-                code = cur.value & 0xFF
-                is_extended = mx.value == 3 and (cur.value >> 8) != 0
-                self._send_json(200, {
-                    "supported": True,
-                    "code": code,
-                    "raw_code": cur.value,
-                    "name": Handler._input_source_name(code),
-                    "extended_encoding": is_extended,
-                    "monitorName": mon_name or "",
-                })
-            else:
-                self._send_json(200, {"supported": False, "reason": "VCP 0x60 读取失败"})
-        except Exception as e:
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _ddcci_set_input(self, body):
-        """POST /ddcci/input — 切换输入源，含回退"""
-        hPhys, mon_name, err = Handler._get_physical_monitor()
-        if hPhys is None:
-            return self._send_json(200, {"success": False, "error": err or "无法获取显示器"})
-        import ctypes
-        from ctypes import windll, byref, c_ubyte, c_uint
-        try:
-            dxva2 = windll.dxva2
-
-            # 1. 读取当前输入源（备份）
-            vct_old = c_ubyte(); cur_old = c_uint(); mx_old = c_uint()
-            dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_old), byref(cur_old), byref(mx_old))
-            old_code = cur_old.value & 0xFF
-
-            # 2. 获取目标输入源
-            target = body.get("code")
-            if target is None:
-                return self._send_json(400, {"success": False, "error": "缺少 code 参数"})
-            try:
-                target_code = int(target)
-            except (ValueError, TypeError):
-                return self._send_json(400, {"success": False, "error": f"无效的 code: {target}"})
-
-            if not (1 <= target_code <= 255):
-                return self._send_json(400, {"success": False, "error": f"code 必须在 1-255 之间"})
-
-            _log(f"[DDC/CI] 切换输入源: 0x{old_code:02X} -> 0x{target_code:02X}")
-
-            # 3. 写入目标输入源
-            ret = dxva2.SetVCPFeature(hPhys, 0x60, target_code)
-            if not ret:
-                return self._send_json(200, {
-                    "success": False, "error": f"SetVCPFeature 0x60={target_code} 失败，显示器可能不支持输入源切换"
-                })
-
-            # 4. 等待稳定
-            import time; time.sleep(2)
-
-            # 5. 验证是否切换成功
-            vct_new = c_ubyte(); cur_new = c_uint(); mx_new = c_uint()
-            dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_new), byref(cur_new), byref(mx_new))
-            actual = cur_new.value & 0xFF
-
-            if actual == target_code:
-                _log(f"[DDC/CI] 输入源切换成功: 0x{old_code:02X} -> 0x{actual:02X}")
-                return self._send_json(200, {
-                    "success": True,
-                    "old_code": old_code,
-                    "old_name": Handler._input_source_name(old_code),
-                    "code": actual,
-                    "name": Handler._input_source_name(actual),
-                    "message": f"已切换到{Handler._input_source_name(actual)}",
-                    "monitorName": mon_name or "",
-                })
-            else:
-                # 6. 切换失败，执行回退
-                _log(f"[DDC/CI] 输入源切换验证失败: 期望 0x{target_code:02X}，实际 0x{actual:02X}，执行回退")
-                dxva2.SetVCPFeature(hPhys, 0x60, old_code)
-                time.sleep(1)
-                # 验证回退
-                dxva2.GetVCPFeatureAndVCPFeatureReply(hPhys, 0x60, byref(vct_old), byref(cur_old), byref(mx_old))
-                restored = cur_old.value & 0xFF
-                if restored == old_code:
-                    _log(f"[DDC/CI] 回退成功: 恢复到 0x{old_code:02X}")
-                    return self._send_json(200, {
-                        "success": False,
-                        "error": f"输入源切换失败，已恢复到{Handler._input_source_name(old_code)}",
-                        "old_code": old_code,
-                        "old_name": Handler._input_source_name(old_code),
-                        "actual": actual,
-                        "restored": True,
-                        "monitorName": mon_name or "",
-                    })
-                else:
-                    _log(f"[DDC/CI] 回退也失败了！当前=0x{restored:02X}，期望=0x{old_code:02X}")
-                    return self._send_json(200, {
-                        "success": False,
-                        "error": f"输入源切换失败，回退也失败，当前={Handler._input_source_name(restored)}",
-                        "old_code": old_code,
-                        "actual": actual,
-                        "restored": False,
-                        "monitorName": mon_name or "",
-                    })
-        except Exception as e:
-            import traceback; _log(f"[DDC/CI] set_input 异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
     SENSEVOICE_CONFIG = {"base_url": "http://192.168.1.32:9997", "api_key": "sk-86ccca26e58a8", "model": "SenseVoiceSmall"}
-
-    def _handle_sensevoice(self):
-        import urllib.request
-        cfg = self.SENSEVOICE_CONFIG
-        target_url = f"{cfg['base_url']}/v1/audio/transcriptions"
-        cl = int(self.headers.get("Content-Length", 0))
-        if cl <= 0: return self._send_json(400, {"success": False, "error": "No audio data"})
-        content_type = self.headers.get("Content-Type", "")
-        original_body = self.rfile.read(cl)
-        boundary = ""
-        for part in content_type.split(";"):
-            part = part.strip()
-            if part.lower().startswith("boundary="):
-                boundary = part.split("=", 1)[1].strip().strip('"'); break
-        if not boundary: return self._send_json(400, {"success": False, "error": "No multipart boundary"})
-        model_field = (f"--{boundary}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\n{cfg['model']}\r\n").encode("utf-8")
-        new_body = model_field + original_body
-        new_content_type = content_type
-        new_cl = len(new_body)
-        try:
-            req = urllib.request.Request(target_url, data=new_body,
-                headers={"Authorization": f"Bearer {cfg['api_key']}", "Content-Type": new_content_type, "Content-Length": str(new_cl)}, method="POST")
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                result = resp.read().decode("utf-8"); data = json.loads(result)
-                text = data.get("text", "").strip()
-                if text: self._send_json(200, {"success": True, "text": text})
-                else: self._send_json(200, {"success": True, "text": "", "raw": data})
-        except urllib.error.HTTPError as e:
-            err_body = e.read().decode("utf-8", errors="replace")
-            _log(f"[SenseVoice] HTTP {e.code}: {err_body[:200]}")
-            self._send_json(502, {"success": False, "error": f"xinference {e.code}: {err_body[:200]}"})
-        except Exception as e:
-            _log(f"[SenseVoice] Error: {e}")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    # B站 wbi 签名混钥表
-    _BILI_MIXIN_TAB = [
-        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
-    ]
-
-    @classmethod
-    def _bili_wbi_sign(cls, params, img_key, sub_key):
-        """B站 wbi 签名"""
-        import hashlib, time, urllib.parse
-        orig = img_key + sub_key
-        mixin_key = "".join([orig[i] for i in cls._BILI_MIXIN_TAB])[:32]
-        params["wts"] = int(time.time())
-        params = dict(sorted(params.items()))
-        query = urllib.parse.urlencode(params)
-        params["w_rid"] = hashlib.md5((query + mixin_key).encode()).hexdigest()
-        return params
-
-    def _handle_bilibili(self):
-        """GET /bilibili/search?keyword=xxx — 搜索B站，播报结果，打开第一个视频"""
-        import subprocess, urllib.parse
-        from urllib.request import Request, urlopen
-        params = self._parse_query_params()
-        keyword = params.get("keyword", "")
-        if not keyword:
-            self._send_json(400, {"success": False, "error": "缺少 keyword 参数"})
-            return
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.bilibili.com",
-            "Origin": "https://www.bilibili.com",
-        }
-
-        try:
-            # 1. 获取 wbi 签名密钥
-            nav_req = Request("https://api.bilibili.com/x/web-interface/nav", headers=headers)
-            nav_resp = urlopen(nav_req, timeout=8)
-            nav_data = json.loads(nav_resp.read().decode("utf-8"))
-            wbi_img = nav_data["data"]["wbi_img"]
-            img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
-            sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
-
-            # 2. wbi 签名搜索请求
-            search_params = self._bili_wbi_sign(
-                {"search_type": "video", "keyword": keyword, "page": 1, "page_size": 5},
-                img_key, sub_key,
-            )
-            query = urllib.parse.urlencode(search_params)
-            api_url = f"https://api.bilibili.com/x/web-interface/wbi/search/type?{query}"
-            req = Request(api_url, headers=headers)
-            resp = urlopen(req, timeout=10)
-            data = json.loads(resp.read().decode("utf-8"))
-
-            results = []
-            video_url = ""
-            if data.get("code") == 0 and data.get("data", {}).get("result"):
-                for item in data["data"]["result"][:3]:
-                    title = item.get("title", "").replace("<em class=\"keyword\">", "").replace("</em>", "")
-                    author = item.get("author", "")
-                    bvid = item.get("bvid", "")
-                    results.append({"title": title, "author": author, "bvid": bvid})
-                if results:
-                    video_url = f"https://www.bilibili.com/video/{results[0]['bvid']}"
-
-            if not results:
-                search_url = f"https://search.bilibili.com/video?keyword={urllib.parse.quote(keyword)}"
-                subprocess.Popen(["cmd", "/c", "start", "", search_url],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                creationflags=subprocess.CREATE_NO_WINDOW)
-                self._send_json(200, {"success": True, "video_url": search_url, "results": [],
-                                      "message": f"未找到视频结果，已打开B站搜索页: {keyword}"})
-                return
-
-            # 打开第一个视频
-            subprocess.Popen(["cmd", "/c", "start", "", video_url],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
-            self._send_json(200, {"success": True, "video_url": video_url, "results": results})
-        except Exception as e:
-            # 出错时回退到搜索页
-            try:
-                search_url = f"https://search.bilibili.com/video?keyword={urllib.parse.quote(keyword)}"
-                subprocess.Popen(["cmd", "/c", "start", "", search_url],
-                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                                creationflags=subprocess.CREATE_NO_WINDOW)
-                self._send_json(200, {"success": True, "video_url": search_url, "results": [],
-                                      "message": f"B站API请求失败，已打开搜索页: {keyword}"})
-            except Exception:
-                self._send_json(500, {"success": False, "error": str(e)})
-
-    def _parse_query_params(self):
-        """从 URL 中提取查询参数"""
-        params = {}
-        if "?" in self.path:
-            query = self.path.split("?", 1)[1]
-            for pair in query.split("&"):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    params[urllib.parse.unquote(k)] = urllib.parse.unquote(v)
-        return params
 
     def _handle_tts(self):
         """Proxy text-to-speech to CosyVoice2 at 192.168.1.32:9997/v1/audio/speech"""
@@ -919,46 +301,26 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _native_status(self):
-        script = ("$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                  "if ($m) { $c = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightness -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                  "@{connected=$true; brightness=($c.CurrentBrightness); instanceName=$m.InstanceName} | ConvertTo-Json -Compress"
-                  "} else {@{connected=$false; error='WMI brightness not available'} | ConvertTo-Json -Compress}")
-        try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            output = result.stdout.strip()
-            if output:
-                import json as _json; data = _json.loads(output)
-                with Handler._state_lock:
-                    data["colorTemp"] = Handler._native_state.get("colorTemp", 50)
-                self._send_json(200, data)
-            else: self._send_json(200, {"connected": False, "error": "No WMI result"})
-        except Exception as e: self._send_json(200, {"connected": False, "error": str(e)})
+        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
+        with Handler._state_lock:
+            state = dict(Handler._native_state)
+        self._send_json(200, {"connected": False, "platform": sys.platform, "state": state,
+                              "note": "WMI not available on Linux; see Plan 2"})
 
     def _native_set_brightness(self, body):
+        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
         value = int(body.get("value", 50)); value = max(0, min(100, value))
-        script = ("$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorBrightnessMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                  "if ($m) { $m.WmiSetBrightness(1, %d); Write-Host 'OK' } else { Write-Host 'ERR' }") % value
-        try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            out = result.stdout.strip()
-            if "OK" in out: self._send_json(200, {"success": True, "brightness": value})
-            else: self._send_json(200, {"success": False, "error": "WMI brightness not available"})
-        except Exception as e: self._send_json(500, {"success": False, "error": str(e)})
+        with Handler._state_lock:
+            Handler._native_state["brightness"] = value
+        Handler._save_state()
+        self._send_json(200, {"success": False, "platform": sys.platform,
+                              "error": "WMI not available on Linux; see Plan 2", "brightness": value})
 
     def _native_set_contrast(self, body):
+        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
         value = int(body.get("value", 50)); value = max(0, min(100, value))
-        script = ("$m = Get-WmiObject -Namespace root\\WMI -Class WmiMonitorContrastMethods -ErrorAction SilentlyContinue | Select-Object -First 1; "
-                  "if ($m) {try { $m.WmiSetContrast(%d, 1); Write-Host 'OK' } catch { Write-Host ('ERR:' + $_.Exception.Message) } "
-                  "} else { Write-Host 'ERR: WMI contrast not available' }") % value
-        try:
-            result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=15,
-                                     creationflags=subprocess.CREATE_NO_WINDOW)
-            out = result.stdout.strip()
-            if "OK" in out: self._send_json(200, {"success": True, "contrast": value})
-            else: self._send_json(200, {"success": False, "error": out})
-        except Exception as e: self._send_json(500, {"success": False, "error": str(e)})
+        self._send_json(200, {"success": False, "platform": sys.platform,
+                              "error": "WMI not available on Linux; see Plan 2", "contrast": value})
 
     def _apply_gamma_ramp(self, gamma_val, r_gain=255, g_gain=255, b_gain=255):
         import ctypes
