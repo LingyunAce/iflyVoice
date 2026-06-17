@@ -123,3 +123,37 @@ def test_dev_stub_clear_call_log():
     assert len(exe.get_call_log()) == 2
     exe.clear_call_log()
     assert len(exe.get_call_log()) == 0
+
+
+# Tests for the conftest.py shared fixtures
+
+
+def test_conftest_pc_agent_url_fixture(pc_agent_url):
+    """pc_agent_url fixture 返回标准测试 URL"""
+    assert pc_agent_url == "http://pc.test.local:18770"
+    assert pc_agent_url.startswith("http://")
+
+
+def test_conftest_dev_stub_fixture(dev_stub):
+    """dev_stub fixture 返回干净的 DevStubExecutor"""
+    from executor.dev_stub import DevStubExecutor
+    assert isinstance(dev_stub, DevStubExecutor)
+    # 每次都返回新的（不共享状态）
+    assert dev_stub.get_call_log() == []
+
+
+def test_conftest_pc_agent_fixture(pc_agent):
+    """pc_agent fixture 返回 PCAgentExecutor 指向测试 URL"""
+    from executor.pc_agent import PCAgentExecutor
+    assert isinstance(pc_agent, PCAgentExecutor)
+    assert pc_agent.base_url == "http://pc.test.local:18770"
+    assert pc_agent.consecutive_failures == 0
+
+
+def test_conftest_dispatcher_fixture(dispatcher):
+    """dispatcher fixture 返回 ExecutorDispatcher"""
+    from executor.dispatcher import ExecutorDispatcher
+    assert isinstance(dispatcher, ExecutorDispatcher)
+    # 默认健康
+    from executor.base import IntentType
+    assert dispatcher._route(IntentType.SET_BRIGHTNESS) is dispatcher.pc_agent
