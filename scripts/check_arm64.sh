@@ -78,6 +78,12 @@ if [ "$(uname -m)" = "aarch64" ]; then
     else
         check_warn "rknn 库不可用（ASR 将走远端）"
     fi
+    # RKNN model file
+    if [ -f models/sensevoice_small.rknn ]; then
+        check_pass "sensevoice_small.rknn model file"
+    else
+        check_warn "sensevoice_small.rknn not found (ASR will use remote)"
+    fi
 fi
 
 # 7. 网络
