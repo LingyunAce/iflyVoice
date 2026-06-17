@@ -303,14 +303,16 @@ class VoicePipeline(QObject):
         if self._current_tts_proc and self._current_tts_proc.poll() is None:
             self._current_tts_proc.terminate()
             self._current_tts_proc = None
-        # 停止 ffplay 播放进程（Windows 需要 taskkill 确保子进程被杀）
+        # 停止 ffplay 播放进程
         if self._current_ffplay_proc and self._current_ffplay_proc.poll() is None:
             try:
                 subprocess.run(
-                    ["taskkill", "/F", "/T", "/PID", str(self._current_ffplay_proc.pid)],
-                    capture_output=True, timeout=3,
-                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    ["pkill", "-TERM", "-P", str(self._current_ffplay_proc.pid)],
+                    capture_output=True, timeout=2,
                 )
+                time.sleep(0.2)
+                if self._current_ffplay_proc.poll() is None:
+                    self._current_ffplay_proc.kill()
             except Exception:
                 try:
                     self._current_ffplay_proc.kill()
@@ -1255,10 +1257,12 @@ class VoicePipeline(QObject):
                     _flog("[Audio Player] 播放被中断，终止 ffplay")
                     try:
                         subprocess.run(
-                            ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
-                            capture_output=True, timeout=3,
-                            creationflags=subprocess.CREATE_NO_WINDOW,
+                            ["pkill", "-TERM", "-P", str(proc.pid)],
+                            capture_output=True, timeout=2,
                         )
+                        time.sleep(0.2)
+                        if proc.poll() is None:
+                            proc.kill()
                     except Exception:
                         try:
                             proc.kill()

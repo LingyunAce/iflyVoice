@@ -655,9 +655,8 @@ class PillMenu(QWidget):
             self._main._pipeline.stop()
         # 杀掉所有残留的 ffplay 进程
         try:
-            subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
-                           capture_output=True, timeout=3,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["pkill", "-f", "ffplay"],
+                           capture_output=True, timeout=2)
         except Exception:
             pass
         QApplication.quit()
@@ -1598,9 +1597,8 @@ def main():
     def _cleanup():
         pipeline.stop()
         try:
-            subprocess.run(["taskkill", "/F", "/IM", "ffplay.exe"],
-                           capture_output=True, timeout=3,
-                           creationflags=subprocess.CREATE_NO_WINDOW)
+            subprocess.run(["pkill", "-f", "ffplay"],
+                           capture_output=True, timeout=2)
         except Exception:
             pass
 
