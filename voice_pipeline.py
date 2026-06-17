@@ -264,6 +264,25 @@ class VoicePipeline(QObject):
             local_executor=LocalExecutor(),
         )
 
+        # NPU ASR (Plan 3)
+        self._npu_asr = None
+        if _cfg.get("npu_asr_enabled", False):
+            try:
+                from npu.rknn_asr import RknnASR
+                import os as _os
+                model_path = _os.path.join(_os.path.dirname(__file__), "models", "sensevoice_small.rknn")
+                if _os.path.exists(model_path):
+                    self._npu_asr = RknnASR(model_path)
+                    if self._npu_asr.is_loaded():
+                        _flog("[NPU] ASR model loaded successfully")
+                    else:
+                        _flog("[NPU] ASR model load failed, falling back to remote")
+                        self._npu_asr = None
+                else:
+                    _flog(f"[NPU] Model file not found: {model_path}")
+            except Exception as e:
+                _flog(f"[NPU] ASR init exception: {e}")
+
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
         """启动管线（后台线程加载模型并开始监听）"""
@@ -1271,7 +1290,22 @@ class VoicePipeline(QObject):
             self._set_state(PipelineState.IDLE)
 
     def _transcribe(self, webm_file):
-        """上传 webm 到 SenseVoice，返回文本"""
+        """Speech to text — NPU first, remote fallback"""
+        # 1. Try NPU ASR
+        if self._npu_asr and self._npu_asr.is_loaded():
+            try:
+                import soundfile as sf
+                audio, sr = sf.read(webm_file, dtype="float32")
+                text = self._npu_asr.transcribe(audio, sample_rate=sr)
+                if text:
+                    stats = self._npu_asr.get_stats()
+                    _flog(f"[ASR] NPU: {text} ({stats['infer_time_ms']:.0f}ms)")
+                    return text
+                _flog("[ASR] NPU returned empty, falling back to remote")
+            except Exception as e:
+                _flog(f"[ASR] NPU exception, falling back to remote: {e}")
+
+        # 2. Remote SenseVoice (original logic)
         try:
             boundary = uuid.uuid4().hex
             with open(webm_file, "rb") as f:
@@ -1300,9 +1334,9 @@ class VoicePipeline(QObject):
             if data.get("success"):
                 return data.get("text", "")
             else:
-                _flog(f"[ASR] 错误: {data.get('error', '')[:100]}")
+                _flog(f"[ASR] Error: {data.get('error', '')[:100]}")
                 return ""
 
         except Exception as e:
-            _flog(f"[ASR] 请求异常: {e}")
+            _flog(f"[ASR] Request exception: {e}")
             return ""
