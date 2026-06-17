@@ -272,88 +272,25 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _handle_native(self, method):
-        path = self.path.split("?")[0].split("#")[0]
+        """本机屏幕软调（Plan 1 stub，Plan 2 替换为 linux/backlight.py）"""
+        path = self.path.split("?")[0]
         endpoint = path.replace("/native/", "", 1).strip("/")
-        if not endpoint: return self._send_json(404, {"success": False, "error": "No native endpoint"})
-        body = {}
-        if method == "POST":
+
+        if endpoint == "backlight" and method == "GET":
+            # Plan 1 stub
+            self._send_json(200, {"ok": True, "data": {"value": 50, "note": "stub; Plan 2 用 /sys/class/backlight"}})
+        elif endpoint == "backlight" and method == "POST":
             cl = int(self.headers.get("Content-Length", 0))
+            body = {}
             if cl > 0:
                 try: body = json.loads(self.rfile.read(cl).decode("utf-8"))
-                except Exception: return self._send_json(400, {"success": False, "error": "Invalid JSON"})
-        handlers = {
-            "status":     ("GET",  lambda: self._native_status()),
-            "brightness": ("POST", lambda b=body: self._native_set_brightness(b)),
-            "contrast":   ("POST", lambda b=body: self._native_set_contrast(b)),
-            "gamma":      ("ALL",  lambda b=body: self._native_set_gamma(b) if method == "POST" else self._native_get_gamma()),
-            "color_temp": ("POST", lambda b=body: self._native_set_color_temp(b)),
-            "volume":     ("ALL",  lambda b=body: self._native_set_volume(b) if method == "POST" else self._native_get_volume()),
-            "power":      ("POST", lambda: self._native_power_off()),
-        }
-        if endpoint not in handlers:
-            return self._send_json(404, {"success": False, "error": f"Unknown native endpoint: {endpoint}"})
-        allowed_method, handler = handlers[endpoint]
-        if allowed_method != "ALL" and method != allowed_method:
-            return self._send_json(405, {"success": False, "error": f"{method} not allowed for /native/{endpoint}"})
-        try: handler()
-        except Exception as e:
-            import traceback; _log(f"[Native] /{endpoint} error: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
-
-    def _native_status(self):
-        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
-        with Handler._state_lock:
-            state = dict(Handler._native_state)
-        self._send_json(200, {"connected": False, "platform": sys.platform, "state": state,
-                              "note": "WMI not available on Linux; see Plan 2"})
-
-    def _native_set_brightness(self, body):
-        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
-        value = int(body.get("value", 50)); value = max(0, min(100, value))
-        with Handler._state_lock:
-            Handler._native_state["brightness"] = value
-        Handler._save_state()
-        self._send_json(200, {"success": False, "platform": sys.platform,
-                              "error": "WMI not available on Linux; see Plan 2", "brightness": value})
-
-    def _native_set_contrast(self, body):
-        # Plan 1: WMI removed (Windows-only). Linux impl comes in Plan 2 (linux/backlight.py).
-        value = int(body.get("value", 50)); value = max(0, min(100, value))
-        self._send_json(200, {"success": False, "platform": sys.platform,
-                              "error": "WMI not available on Linux; see Plan 2", "contrast": value})
-
-    @staticmethod
-    def _apply_gamma_ramp(gamma_val, r_gain=255, g_gain=255, b_gain=255):
-        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
-        return 0
-
-    def _native_set_gamma(self, body):
-        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
-        value = int(body.get("value", 50)); value = max(0, min(100, value))
-        self._send_json(501, {"ok": False, "err": "gamma ramp not supported on Linux; see Plan 2", "gamma": value})
-
-    def _native_get_gamma(self):
-        with Handler._state_lock: state = dict(Handler._native_state)
-        self._send_json(200, {"gamma": state["gamma"], "colorTemp": state["colorTemp"]})
-
-    def _native_power_off(self):
-        # Plan 1: Win32 monitor-power SendMessageW removed. Linux impl comes in Plan 2 (linux/dpms.py).
-        self._send_json(501, {"ok": False, "err": "screen power-off not supported on Linux; see Plan 2"})
-
-    @staticmethod
-    def _run_nircmd(args, timeout=5):
-        # Plan 1: nircmd.exe is Windows-only. Linux impl comes in Plan 2 (linux/pulseaudio.py).
-        return None
-
-    def _native_set_volume(self, body):
-        # Plan 1: nircmd.exe removed. Linux impl comes in Plan 2 (linux/pulseaudio.py).
-        value = int(body.get("value", 50)); value = max(0, min(100, value))
-        self._send_json(501, {"ok": False, "err": "set-volume not supported on Linux; see Plan 2", "volume": value})
-
-    def _native_get_volume(self):
-        with Handler._state_lock: vol = Handler._native_state.get("volume", 50)
-        _log(f"[Native] 音量读取: 返回缓存 {vol}%")
-        self._send_json(200, {"volume": vol, "source": "cached"})
+                except Exception: body = {}
+            value = int(body.get("value", 50))
+            self._send_json(200, {"ok": True, "data": {"value": max(0, min(100, value)), "note": "stub"}})
+        elif endpoint == "ping":
+            self._send_json(200, {"ok": True, "data": {"pong": True}})
+        else:
+            self._send_json(404, {"ok": False, "err": f"unknown native endpoint: {endpoint}"})
 
     @staticmethod
     def _save_state():
@@ -382,11 +319,6 @@ class Handler(BaseHTTPRequestHandler):
             _log(f"[Native] 音量启动: 从持久化文件恢复 volume={vol}%")
             return
         _log("[Native] 音量启动: 无持久化状态，使用默认 50% (Linux 启动桩)")
-
-    def _native_set_color_temp(self, body):
-        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
-        value = int(body.get("value", 50)); value = max(0, min(100, value))
-        self._send_json(501, {"ok": False, "err": "color-temp not supported on Linux; see Plan 2", "colorTemp": value})
 
     def _send_json(self, code, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")

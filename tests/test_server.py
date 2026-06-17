@@ -39,3 +39,26 @@ def test_powershell_subprocess_removed():
     import inspect
     src = inspect.getsource(server)
     assert "powershell" not in src.lower(), "server.py 仍含 PowerShell 调用"
+
+
+def test_native_endpoint_in_do_get():
+    """do_GET 中应处理 /native 前缀"""
+    import server
+    import inspect
+    src = inspect.getsource(server.Handler.do_GET)
+    assert "/native/" in src, "do_GET 中应处理 /native/ 前缀"
+
+
+def test_handle_native_method_exists():
+    """Handler 应该有 _handle_native 方法"""
+    import server
+    assert hasattr(server.Handler, "_handle_native"), "缺少 _handle_native 方法"
+
+
+def test_handle_native_backlight_get_returns_50_stub():
+    """_handle_native 调 GET /native/backlight 应返回 50 stub"""
+    import server
+    import inspect
+    src = inspect.getsource(server.Handler._handle_native)
+    assert "/backlight" in src, "_handle_native 应处理 backlight"
+    assert "50" in src, "Plan 1 stub 应返回 50"
