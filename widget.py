@@ -34,6 +34,22 @@ def _flog(msg):
     _flog_shared("[VoiceAI]", msg)
 
 
+def _preferred_font():
+    """优先用 Noto Sans CJK；不支持则回退到系统默认 sans-serif"""
+    from PySide6.QtGui import QFontDatabase, QFont
+    from PySide6.QtWidgets import QApplication
+    # QFontDatabase.families() 需要 QApplication 实例
+    _app = QApplication.instance()
+    if _app is None:
+        return QFont()  # 没有 QApplication 时直接返回默认字体
+    candidates = ["Noto Sans CJK SC", "Noto Sans CJK", "WenQuanYi Micro Hei", "Microsoft YaHei UI"]
+    families = set(QFontDatabase.families())
+    for name in candidates:
+        if name in families:
+            return QFont(name, 10)
+    return QFont()  # system default
+
+
 # ═══════════════════════════════════════════════════════════════════
 #  Icon Drawing
 # ═══════════════════════════════════════════════════════════════════
@@ -1582,6 +1598,7 @@ def main():
         _log("警告: HTTP 服务未能在 15 秒内就绪")
 
     app = QApplication(sys.argv)
+    QApplication.setFont(_preferred_font())
     app.setApplicationName("VoiceAI")
     app.setQuitOnLastWindowClosed(False)
 
