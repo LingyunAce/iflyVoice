@@ -2,6 +2,7 @@
 支持 PC 失败降级：连续 N 次失败后，所有 PC 意图降级到 stub（仅 dev 用）
 """
 from __future__ import annotations
+import threading
 import time
 from typing import Optional
 from executor.base import Executor, Intent, IntentType
@@ -42,6 +43,7 @@ class ExecutorDispatcher:
         self.health_check_interval = health_check_interval
         self._last_health_check: float = 0.0
         self._health_check_ok: bool = False
+        self._health_lock = threading.Lock()
 
     def dispatch(self, intent: Intent) -> dict:
         """派发意图到对应执行器"""
@@ -68,21 +70,22 @@ class ExecutorDispatcher:
         if self.pc_agent.consecutive_failures < self.fail_threshold:
             return True
 
-        # 超过阈值：限速心跳探测
-        now = time.time()
+        # 超过阈值：限速心跳探测（加锁防 TOCTOU 并发踩状态）
+        with self._health_lock:
+            now = time.time()
 
-        # 探测成功过 → 直接信任（已恢复）
-        if self._health_check_ok:
-            return True
+            # 探测成功过 → 直接信任（已恢复）
+            if self._health_check_ok:
+                return True
 
-        # 探测失败过 → 限速，到时间才再探测
-        if now - self._last_health_check < self.health_check_interval:
-            return False
+            # 探测失败过 → 限速，到时间才再探测
+            if now - self._last_health_check < self.health_check_interval:
+                return False
 
-        # 探测
-        self._last_health_check = now
-        self._health_check_ok = self.pc_agent.health_check()
-        if self._health_check_ok:
-            # 健康了，清零失败计数
-            self.pc_agent._record_success()
-        return self._health_check_ok
+            # 探测
+            self._last_health_check = now
+            self._health_check_ok = self.pc_agent.health_check()
+            if self._health_check_ok:
+                # 健康了，清零失败计数
+                self.pc_agent._record_success()  # TODO: replace with reset_failures() in B.3
+            return self._health_check_ok

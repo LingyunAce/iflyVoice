@@ -1,3 +1,5 @@
+import threading
+
 import pytest
 from executor.dispatcher import ExecutorDispatcher
 from executor.base import Intent, IntentType
@@ -62,3 +64,37 @@ def test_dispatcher_recovers_after_pc_health_check():
 
     target = disp._route(IntentType.SET_BRIGHTNESS)
     assert target is pc
+
+
+def test_dispatcher_concurrent_routes_safe():
+    """并发调用 _route 不应崩溃或死锁"""
+    from executor.dispatcher import ExecutorDispatcher
+    from executor.dev_stub import DevStubExecutor
+    from executor.pc_agent import PCAgentExecutor
+    from executor.base import Intent, IntentType
+
+    pc = PCAgentExecutor("http://pc.local:18770")
+    stub = DevStubExecutor()
+    disp = ExecutorDispatcher(pc_agent=pc, dev_stub=stub)
+
+    # 让 PC "失败" 3 次，触发 circuit breaker
+    pc._record_failure()
+    pc._record_failure()
+    pc._record_failure()
+
+    errors = []
+
+    def worker():
+        try:
+            for _ in range(50):
+                disp._route(IntentType.SET_BRIGHTNESS)
+        except Exception as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not errors, f"并发调用出错: {errors}"
