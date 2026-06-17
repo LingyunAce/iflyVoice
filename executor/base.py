@@ -4,7 +4,7 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field, asdict
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
 
 class IntentType(str, Enum):
@@ -80,12 +80,6 @@ class Executor(ABC):
 
 # ── 文本→意图 解析 ─────────────────────────────────────
 # 复用现有 voice_pipeline.parse_voice_command 的正则逻辑，但产出 Intent 而非 dict
-
-_DISPLAY_CONTROL_MAP = {
-    "brightness": IntentType.SET_BRIGHTNESS,
-    "contrast": IntentType.SET_CONTRAST,
-    "color_temp": IntentType.SET_COLOR_TEMP,
-}
 
 
 def parse_intent_from_voice_text(text: str) -> Optional[Intent]:
