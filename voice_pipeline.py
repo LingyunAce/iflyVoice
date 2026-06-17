@@ -753,18 +753,21 @@ class VoicePipeline(QObject):
 
     @staticmethod
     def _get_system_volume_obj():
-        """获取 pycaw 音量对象（确保 COM 已初始化）"""
-        import comtypes
-        comtypes.CoInitialize()
-        from pycaw.pycaw import AudioUtilities
-        speakers = AudioUtilities.GetSpeakers()
-        return speakers.EndpointVolume
+        """获取 PulseAudio 音量控制对象（pulsectl）"""
+        import pulsectl
+        return pulsectl.Pulse("iflyvoice-volume")
 
     def _get_system_volume(self):
         """读取系统音量（0~100），失败返回 None"""
         try:
-            vol = self._get_system_volume_obj()
-            return round(vol.GetMasterVolumeLevelScalar() * 100)
+            pulse = self._get_system_volume_obj()
+            for sink in pulse.sink_list():
+                if sink.name == "@DEFAULT_SINK@" or sink.index == 0:
+                    vol = sink.volume.value_flat
+                    pulse.close()
+                    return round(vol * 100)
+            pulse.close()
+            return None
         except Exception as e:
             _flog(f"[音量] 读取失败: {e}")
             return None
@@ -772,11 +775,17 @@ class VoicePipeline(QObject):
     def _set_system_volume(self, value):
         """设置系统音量（0~100），返回实际值，失败返回 None"""
         try:
-            vol = self._get_system_volume_obj()
-            vol.SetMasterVolumeLevelScalar(value / 100.0, None)
-            actual = round(vol.GetMasterVolumeLevelScalar() * 100)
-            _flog(f"[音量] 设置 → {actual}%")
-            return actual
+            import pulsectl
+            pulse = self._get_system_volume_obj()
+            for sink in pulse.sink_list():
+                if sink.name == "@DEFAULT_SINK@" or sink.index == 0:
+                    pulse.volume_set(sink, pulsectl.PulseVolumeInfo(value / 100.0))
+                    actual = round(sink.volume.value_flat * 100)
+                    pulse.close()
+                    _flog(f"[音量] 设置 → {actual}%")
+                    return actual
+            pulse.close()
+            return None
         except Exception as e:
             _flog(f"[音量] 设置失败: {e}")
             return None
