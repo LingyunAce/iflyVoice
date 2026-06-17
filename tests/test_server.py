@@ -62,3 +62,17 @@ def test_handle_native_backlight_get_returns_50_stub():
     src = inspect.getsource(server.Handler._handle_native)
     assert "/backlight" in src, "_handle_native 应处理 backlight"
     assert "50" in src, "Plan 1 stub 应返回 50"
+
+
+def test_handle_native_post_backlight_malformed_json_returns_400():
+    """POST /native/backlight 收到 malformed JSON 时返回 400 + 错误信息（而不是 200 + 默认值）"""
+    import inspect
+    import server
+
+    src = inspect.getsource(server.Handler._handle_native)
+    # 不应该有静默的 `except Exception: body = {}` 这种静默吞错
+    assert "except Exception: body = {}" not in src, "_handle_native 仍有静默 except Exception: body = {}"
+    # 应该有显式 400 处理
+    assert "400" in src, "_handle_native 应返回 400 状态码处理 malformed JSON"
+    # 错误路径必须经过 _log 记录（不能再静默）
+    assert "_log(" in src, "_handle_native 错误路径应调用 _log 记录"

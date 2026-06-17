@@ -281,11 +281,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "data": {"value": 50, "note": "stub; Plan 2 用 /sys/class/backlight"}})
         elif endpoint == "backlight" and method == "POST":
             cl = int(self.headers.get("Content-Length", 0))
-            body = {}
-            if cl > 0:
-                try: body = json.loads(self.rfile.read(cl).decode("utf-8"))
-                except Exception: body = {}
-            value = int(body.get("value", 50))
+            try:
+                body = json.loads(self.rfile.read(cl).decode("utf-8"))
+            except (ValueError, UnicodeDecodeError) as e:
+                _log(f"[/native/backlight] invalid JSON: {e}")
+                self._send_json(400, {"ok": False, "err": f"invalid JSON body: {e}", "code": "ERR_INVALID_JSON"})
+                return
+            except Exception as e:
+                _log(f"[/native/backlight] read body error: {e}")
+                self._send_json(400, {"ok": False, "err": f"failed to read body: {e}", "code": "ERR_INVALID_JSON"})
+                return
+            if not isinstance(body, dict):
+                _log(f"[/native/backlight] body is not a dict: {type(body).__name__}")
+                self._send_json(400, {"ok": False, "err": "body must be a JSON object", "code": "ERR_INVALID_JSON"})
+                return
+            value = body.get("value", 50)
+            try:
+                value = int(value)
+            except (TypeError, ValueError) as e:
+                _log(f"[/native/backlight] invalid value: {value!r} ({e})")
+                self._send_json(400, {"ok": False, "err": f"value must be an integer: {e}", "code": "ERR_INVALID_JSON"})
+                return
             self._send_json(200, {"ok": True, "data": {"value": max(0, min(100, value)), "note": "stub"}})
         elif endpoint == "ping":
             self._send_json(200, {"ok": True, "data": {"pong": True}})
