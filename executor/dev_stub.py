@@ -1,7 +1,11 @@
 """dev_stub 执行器 — 仅用于 dev/单测，永远不会用于生产"""
 from __future__ import annotations
+from collections import deque
 from typing import Any
 from executor.base import Executor, Intent, IntentType
+
+
+MAX_CALL_LOG = 1000
 
 
 class DevStubExecutor(Executor):
@@ -15,7 +19,7 @@ class DevStubExecutor(Executor):
         self._local_state = {
             "backlight": 0,
         }
-        self._call_log: list[dict] = []
+        self._call_log: deque = deque(maxlen=MAX_CALL_LOG)
 
     def execute(self, intent: Intent) -> dict:
         self._call_log.append(intent.to_dict())
@@ -77,3 +81,7 @@ class DevStubExecutor(Executor):
 
     def get_call_log(self) -> list[dict]:
         return list(self._call_log)
+
+    def clear_call_log(self) -> None:
+        """清空调用日志（测试和 dev 用）"""
+        self._call_log.clear()

@@ -98,3 +98,28 @@ def test_dev_stub_local_backlight_records_state():
     exe.execute_safe(Intent(IntentType.ADJUST_LOCAL_BACKLIGHT, {"delta": 20}))
     state = exe.get_local_state()
     assert state["backlight"] == 30
+
+
+def test_dev_stub_call_log_is_capped():
+    """call_log 应该限容，防止内存无限增长"""
+    exe = DevStubExecutor()
+    # 发出 1500 次调用（超过上限 1000）
+    for i in range(1500):
+        exe.execute_safe(Intent(IntentType.LAUNCH_APP, {"name": f"app{i}"}))
+    log = exe.get_call_log()
+    # 应该只保留最后 1000 条
+    assert len(log) == 1000
+    # 第一条应该是 app500（1500-1000）
+    assert log[0]["params"]["name"] == "app500"
+    # 最后一条应该是 app1499
+    assert log[-1]["params"]["name"] == "app1499"
+
+
+def test_dev_stub_clear_call_log():
+    """clear_call_log() 应该清空 log"""
+    exe = DevStubExecutor()
+    exe.execute_safe(Intent(IntentType.LAUNCH_APP, {"name": "wechat"}))
+    exe.execute_safe(Intent(IntentType.LAUNCH_APP, {"name": "qq"}))
+    assert len(exe.get_call_log()) == 2
+    exe.clear_call_log()
+    assert len(exe.get_call_log()) == 0
