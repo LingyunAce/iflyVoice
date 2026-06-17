@@ -23,14 +23,24 @@ def test_dispatcher_routes_pc_intent_to_pc_agent():
     assert target is pc
 
 
-def test_dispatcher_routes_local_intent_to_stub():
-    """本机屏意图走 stub（本期 dev_stub，本机实现在 Plan 2）"""
+def test_dispatcher_routes_local_intent_to_local_executor():
+    """LOCAL intent routes to LocalExecutor"""
+    from executor.local import LocalExecutor
     stub = DevStubExecutor()
     pc = PCAgentExecutor("http://pc.local:18770")
-    disp = ExecutorDispatcher(pc_agent=pc, dev_stub=stub)
+    local = LocalExecutor()
+    disp = ExecutorDispatcher(pc_agent=pc, dev_stub=stub, local_executor=local)
 
     target = disp._route(IntentType.ADJUST_LOCAL_BACKLIGHT)
-    assert target is stub
+    assert isinstance(target, LocalExecutor)
+
+
+def test_dispatcher_routes_local_to_local_executor(dispatcher, dev_stub):
+    """LOCAL intent routes to LocalExecutor, not dev_stub"""
+    from executor.local import LocalExecutor
+    target = dispatcher._route(IntentType.ADJUST_LOCAL_BACKLIGHT)
+    assert isinstance(target, LocalExecutor)
+    assert target is not dev_stub
 
 
 def test_dispatcher_falls_back_to_stub_when_pc_unhealthy():

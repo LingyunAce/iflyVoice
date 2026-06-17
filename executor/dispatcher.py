@@ -7,6 +7,7 @@ import time
 from typing import Optional
 from executor.base import Executor, Intent, IntentType
 from executor.dev_stub import DevStubExecutor
+from executor.local import LocalExecutor
 from executor.pc_agent import PCAgentExecutor
 
 
@@ -36,9 +37,11 @@ class ExecutorDispatcher:
     """
 
     def __init__(self, pc_agent: PCAgentExecutor, dev_stub: DevStubExecutor,
+                 local_executor: LocalExecutor = None,
                  fail_threshold: int = 3, health_check_interval: float = 30.0):
         self.pc_agent = pc_agent
         self.dev_stub = dev_stub
+        self.local_executor = local_executor or LocalExecutor()
         self.fail_threshold = fail_threshold
         self.health_check_interval = health_check_interval
         self._last_health_check: float = 0.0
@@ -53,7 +56,7 @@ class ExecutorDispatcher:
     def _route(self, intent_type: IntentType) -> Executor:
         """根据意图类型 + PC 健康状态选择执行器"""
         if intent_type in _LOCAL_INTENTS:
-            return self.dev_stub  # 本期 stub；Plan 2 替换为 LocalExecutor
+            return self.local_executor
 
         # PC 意图：检查 PC 是否健康
         if self._is_pc_healthy():

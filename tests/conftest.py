@@ -37,12 +37,19 @@ def pc_agent(pc_agent_url):
 
 
 @pytest.fixture
-def dispatcher(pc_agent, dev_stub):
+def local_executor():
+    from executor.local import LocalExecutor
+    return LocalExecutor()
+
+
+@pytest.fixture
+def dispatcher(pc_agent, dev_stub, local_executor):
     """每次测试一个干净的 ExecutorDispatcher（fail_threshold=2 便于快速触发）"""
     from executor.dispatcher import ExecutorDispatcher
     return ExecutorDispatcher(
         pc_agent=pc_agent,
         dev_stub=dev_stub,
+        local_executor=local_executor,
         fail_threshold=2,  # 比默认 3 小，方便测试快速触发降级
         health_check_interval=0.5,
     )
