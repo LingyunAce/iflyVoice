@@ -175,3 +175,51 @@ pyinstaller build/VoiceAI.spec
 
 **Q: 打包后的 exe 在其他机器上启动失败？**
 > 确保目标机器是 Windows 10/11，且已安装 ffmpeg（ffmpeg.exe + ffplay.exe 在 PATH 中）。
+
+---
+
+## RK3576 鲁班猫移植 (Linux/aarch64)
+
+将本项目作为 Win PC 的语音代理前端运行在 RK3576 鲁班猫（Ubuntu 22.04 aarch64）上。
+
+### 架构
+
+- **RK3576** = 语音前端：mic 采集 + NPU 跑 ASR/唤醒词 + UI + TTS 播放
+- **Win PC** = 执行端：显示器 DDC-CI、桌面应用、B 站搜索（通过 `executor/pc_agent.py` 调 HTTP）
+- 见 `docs/superpowers/specs/2026-06-17-rk3576-port-design.md` 详细设计
+
+### 一键安装
+
+```bash
+bash install-arm64.sh
+```
+
+### 启动
+
+```bash
+bash start-widget.sh
+```
+
+### 预检
+
+```bash
+bash scripts/check_arm64.sh
+```
+
+### 测试
+
+```bash
+bash scripts/run_all_arm64.sh
+```
+
+### 限制
+
+- Win PC agent 本期只写了接口契约（`docs/WIN_PC_AGENT_API.md`），实现放下一期
+- NPU 跑 ASR 在 Plan 3 实现
+- 本期 executor 默认走 `dev_stub`；要连真 PC 改 `settings.json` 的 `winpc_agent_url`
+
+### 实施计划
+
+- Plan 1 (本计划): 架构基座 — executor 抽象 + server /native + Win Agent API 契约
+- Plan 2: Linux 用户面移植 — audio_io / widget / voice_pipeline
+- Plan 3: NPU 接入 + ARM 验证门禁
