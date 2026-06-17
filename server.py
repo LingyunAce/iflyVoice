@@ -3,7 +3,7 @@
 """
 Ollama Local Proxy Server v3 — with system tray support
 """
-import os, sys, json, socket, subprocess, threading, struct
+import os, sys, json, socket, threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 
@@ -322,80 +322,33 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(200, {"success": False, "platform": sys.platform,
                               "error": "WMI not available on Linux; see Plan 2", "contrast": value})
 
-    def _apply_gamma_ramp(self, gamma_val, r_gain=255, g_gain=255, b_gain=255):
-        import ctypes
-        from ctypes import windll, byref, c_uint16, Structure
-        class GAMMARAMP(Structure):
-            _fields_ = [("Red", c_uint16 * 256), ("Green", c_uint16 * 256), ("Blue", c_uint16 * 256)]
-        gamma = GAMMARAMP()
-        for i in range(256):
-            x = i / 255.0
-            r = min(255, int((x ** gamma_val) * r_gain))
-            g = min(255, int((x ** gamma_val) * g_gain))
-            b = min(255, int((x ** gamma_val) * b_gain))
-            gamma.Red[i] = min(65535, r * 257); gamma.Green[i] = min(65535, g * 257); gamma.Blue[i] = min(65535, b * 257)
-        user32 = windll.user32; gdi32 = windll.gdi32
-        dm = user32.GetDesktopWindow(); dc = user32.GetDC(dm); result = 0
-        if dc: result = gdi32.SetDeviceGammaRamp(dc, byref(gamma)); user32.ReleaseDC(dm, dc)
-        if not result:
-            dc2 = user32.GetDC(0)
-            if dc2: result = gdi32.SetDeviceGammaRamp(dc2, byref(gamma)); user32.ReleaseDC(0, dc2)
-        return result
+    @staticmethod
+    def _apply_gamma_ramp(gamma_val, r_gain=255, g_gain=255, b_gain=255):
+        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
+        return 0
 
     def _native_set_gamma(self, body):
+        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
         value = int(body.get("value", 50)); value = max(0, min(100, value))
-        gamma_val = 2.5 - (value / 100.0 * 2.0)
-        try:
-            result = self._apply_gamma_ramp(gamma_val)
-            if result:
-                with Handler._state_lock: Handler._native_state["gamma"] = value
-                Handler._save_state()
-                self._send_json(200, {"success": True, "gamma": value, "gammaVal": round(gamma_val, 2)})
-            else: self._send_json(200, {"success": False, "error": "SetDeviceGammaRamp failed"})
-        except Exception as e:
-            import traceback; _log(f"[Native] 伽马设置异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
+        self._send_json(501, {"ok": False, "err": "gamma ramp not supported on Linux; see Plan 2", "gamma": value})
 
     def _native_get_gamma(self):
         with Handler._state_lock: state = dict(Handler._native_state)
         self._send_json(200, {"gamma": state["gamma"], "colorTemp": state["colorTemp"]})
 
     def _native_power_off(self):
-        try:
-            import ctypes; from ctypes import windll
-            user32 = windll.user32
-            HW_BROADCAST = 0xFFFF; WM_SYSCOMMAND = 0x0112; SC_MONITORPOWER = 0xF170
-            user32.SendMessageW(HW_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2)
-            _log("[Native] 息屏完成")
-            self._send_json(200, {"success": True, "action": "screen_off"})
-        except Exception as e:
-            import traceback; _log(f"[Native] 息屏异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
+        # Plan 1: Win32 monitor-power SendMessageW removed. Linux impl comes in Plan 2 (linux/dpms.py).
+        self._send_json(501, {"ok": False, "err": "screen power-off not supported on Linux; see Plan 2"})
 
     @staticmethod
     def _run_nircmd(args, timeout=5):
-        import os, subprocess as _sp, sys as _sys
-        _nircmd_dir = _sys._MEIPASS if getattr(_sys, "frozen", False) else STATIC_DIR
-        nircmd = os.path.join(_nircmd_dir, "nircmd.exe")
-        if not os.path.exists(nircmd): return None
-        si = _sp.STARTUPINFO()
-        si.dwFlags |= _sp.STARTF_USESHOWWINDOW; si.wShowWindow = 0
-        try:
-            return _sp.run([nircmd] + args, capture_output=True, text=True, timeout=timeout, startupinfo=si)
-        except Exception: return None
+        # Plan 1: nircmd.exe is Windows-only. Linux impl comes in Plan 2 (linux/pulseaudio.py).
+        return None
 
     def _native_set_volume(self, body):
+        # Plan 1: nircmd.exe removed. Linux impl comes in Plan 2 (linux/pulseaudio.py).
         value = int(body.get("value", 50)); value = max(0, min(100, value))
-        raw_val = int(round(value * 65535 / 100.0))
-        result = self._run_nircmd(["setsysvolume", str(raw_val)])
-        if result is None: self._send_json(500, {"success": False, "error": "nircmd.exe not found or failed"}); return
-        if result.returncode == 0:
-            with Handler._state_lock: Handler._native_state["volume"] = value
-            Handler._save_state()
-            self._send_json(200, {"success": True, "volume": value})
-        else:
-            err = result.stderr.strip() or result.stdout.strip()
-            self._send_json(200, {"success": False, "error": err})
+        self._send_json(501, {"ok": False, "err": "set-volume not supported on Linux; see Plan 2", "volume": value})
 
     def _native_get_volume(self):
         with Handler._state_lock: vol = Handler._native_state.get("volume", 50)
@@ -423,85 +376,17 @@ class Handler(BaseHTTPRequestHandler):
 
     @staticmethod
     def _bootstrap_volume():
+        # Plan 1: csc.exe / waveOutGetVolume removed. Linux impl comes in Plan 2 (linux/pulseaudio.py).
         if Handler._load_state():
             vol = Handler._native_state.get("volume", 50)
-            _log(f"[Native] 音量启动: 从持久化文件恢复 volume={vol}%"); return
-        vol_exe = os.path.join(STATIC_DIR, "_vol_read.exe")
-        vol_src = os.path.join(STATIC_DIR, "_vol_test.cs")
-        csc_path = None
-        for candidate in [
-            os.path.join(os.environ.get("windir", ""), r"Microsoft.NET\Framework64\v4.0.30319", "csc.exe"),
-            os.path.join(os.environ.get("windir", ""), r"Microsoft.NET\Framework\v4.0.30319", "csc.exe"),
-        ]:
-            if os.path.isfile(candidate): csc_path = candidate; break
-        if csc_path and os.path.exists(vol_src) and not os.path.exists(vol_exe):
-            try:
-                cwd = os.getcwd(); os.chdir(STATIC_DIR)
-                compile_r = subprocess.run([csc_path, "/target:exe", f"/out:{os.path.basename(vol_exe)}", "/nologo", os.path.basename(vol_src)], capture_output=True, timeout=30,
-                                            creationflags=subprocess.CREATE_NO_WINDOW)
-                os.chdir(cwd)
-                if compile_r.returncode == 0 and os.path.exists(vol_exe): _log("[Native] 音量启动: C# 编译成功")
-                else: vol_exe = None
-            except Exception as e: _log(f"[Native] 音量启动: C# 编译失败 {e}"); vol_exe = None
-        elif not os.path.exists(vol_src): vol_exe = None
-        if vol_exe and os.path.exists(vol_exe):
-            try:
-                run_r = subprocess.run([vol_exe], capture_output=True, text=True, timeout=10, errors="replace",
-                                        creationflags=subprocess.CREATE_NO_WINDOW)
-                out = run_r.stdout.strip()
-                if out.lstrip('-').isdigit():
-                    v = int(out)
-                    if 0 <= v <= 100:
-                        with Handler._state_lock: Handler._native_state["volume"] = v
-                        Handler._save_state()
-                        _log(f"[Native] 音量启动: C# 读取器 → {v}%"); return
-            except Exception as e: _log(f"[Native] 音量启动: C# 读取器执行失败 {e}")
-        try:
-            import ctypes
-            v = ctypes.c_uint32()
-            ctypes.windll.winmm.waveOutGetVolume(0, ctypes.byref(v))
-            lo = v.value & 0xFFFF; hi = (v.value >> 16) & 0xFFFF
-            wave_pct = int((lo + hi) // 2 * 100 / 0xFFFF)
-            if 0 <= wave_pct <= 100:
-                with Handler._state_lock: Handler._native_state["volume"] = wave_pct
-                Handler._save_state()
-                _log(f"[Native] 音量启动: waveOut 近似值 → {wave_pct}% (仅参考)"); return
-        except Exception as e: _log(f"[Native] 音量启动: waveOut 失败 ({e})")
-        Handler._save_state()
-        _log("[Native] 音量启动: 使用默认 50%")
+            _log(f"[Native] 音量启动: 从持久化文件恢复 volume={vol}%")
+            return
+        _log("[Native] 音量启动: 无持久化状态，使用默认 50% (Linux 启动桩)")
 
     def _native_set_color_temp(self, body):
+        # Plan 1: Win32 GDI gamma ramp removed. Linux impl comes in Plan 2 (linux/backlight.py).
         value = int(body.get("value", 50)); value = max(0, min(100, value))
-        try:
-            import ctypes
-            from ctypes import windll, byref, c_uint16, Structure
-            class GAMMARAMP(Structure):
-                _fields_ = [("Red", c_uint16 * 256), ("Green", c_uint16 * 256), ("Blue", c_uint16 * 256)]
-            t = value / 100.0
-            r_gain = 255 - int(t * 75); g_gain = 180 + int(t * 20); b_gain = 100 + int(t * 155)
-            gamma_val_r = 1.0; gamma_val_g = 1.0; gamma_val_b = 1.0 + t * 0.25
-            gamma = GAMMARAMP()
-            for i in range(256):
-                x = i / 255.0
-                def rg(v, gv, g): return min(255, int((v ** gv) * g))
-                r = rg(x, gamma_val_r, r_gain); g = rg(x, gamma_val_g, g_gain); b = rg(x, gamma_val_b, b_gain)
-                gamma.Red[i] = min(65535, r * 257); gamma.Green[i] = min(65535, g * 257); gamma.Blue[i] = min(65535, b * 257)
-            user32 = windll.user32; gdi32 = windll.gdi32
-            dm = user32.GetDesktopWindow(); dc = user32.GetDC(dm); result = 0
-            if dc: result = gdi32.SetDeviceGammaRamp(dc, byref(gamma)); user32.ReleaseDC(dm, dc)
-            if not result:
-                dc2 = user32.GetDC(0)
-                if dc2: result = gdi32.SetDeviceGammaRamp(dc2, byref(gamma)); user32.ReleaseDC(0, dc2)
-            if result:
-                with Handler._state_lock: Handler._native_state["colorTemp"] = value
-                Handler._save_state()
-                self._send_json(200, {"success": True, "colorTemp": value})
-            else:
-                err = ctypes.get_last_error()
-                self._send_json(200, {"success": False, "error": f"SetDeviceGammaRamp failed (err={err}). 尝试以管理员身份运行。"})
-        except Exception as e:
-            import traceback; _log(f"[Native] 色温设置异常: {e}\n{traceback.format_exc()}\n")
-            self._send_json(500, {"success": False, "error": str(e)})
+        self._send_json(501, {"ok": False, "err": "color-temp not supported on Linux; see Plan 2", "colorTemp": value})
 
     def _send_json(self, code, payload):
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
