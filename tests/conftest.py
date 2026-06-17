@@ -5,6 +5,10 @@
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "slow: marks tests as slow (e.g. 30-min stability)")
+
+
 # ── 常量 ──────────────────────────────────────────────
 TEST_PC_AGENT_URL = "http://pc.test.local:18770"
 TEST_PC_AGENT_TIMEOUT = 1.0
