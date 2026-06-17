@@ -1,0 +1,26 @@
+# Core UI
+PySide6>=6.6
+sounddevice>=0.4.6
+
+# Audio / ML
+numpy>=1.24
+onnxruntime>=1.17
+requests>=2.31
+edge-tts>=6.1
+Pillow>=10.0
+
+# Linux 音频
+pulsectl>=1.0
+pyalsaaudio>=0.10
+
+# NPU 推理（板子跑才需要，x86 上 install 时跳过）
+rknn-toolkit2-lite2>=2.0; sys_platform == "linux" and platform_machine == "aarch64"
+
+# Robustness
+tenacity>=8.2
+pydantic>=2.5
+
+# Dev / Test
+pytest>=7.4
+responses>=0.24
+psutil>=5.9
