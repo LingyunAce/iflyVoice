@@ -1,5 +1,6 @@
 import pytest
 from executor.base import Executor, Intent, IntentType, ExecutorError
+from executor.dev_stub import DevStubExecutor
 
 
 def test_intent_construction():
@@ -71,3 +72,29 @@ def test_parse_local_screen_intent():
     assert intent is not None
     assert intent.type == IntentType.ADJUST_LOCAL_BACKLIGHT
     assert intent.params["delta"] == 10
+
+
+def test_dev_stub_set_brightness():
+    """dev_stub 能处理 set_brightness"""
+    exe = DevStubExecutor()
+    result = exe.execute_safe(Intent(IntentType.SET_BRIGHTNESS, {"value": 50, "monitor_index": 0}))
+    assert result["ok"] is True
+    assert result["data"]["actual"] == 50
+    assert "fake" in result["data"]["note"]
+
+
+def test_dev_stub_launch_app():
+    """dev_stub 能处理 launch_app"""
+    exe = DevStubExecutor()
+    result = exe.execute_safe(Intent(IntentType.LAUNCH_APP, {"name": "微信"}))
+    assert result["ok"] is True
+    assert result["data"]["name"] == "微信"
+
+
+def test_dev_stub_local_backlight_records_state():
+    """dev_stub 维护本机屏状态的内部字典"""
+    exe = DevStubExecutor()
+    exe.execute_safe(Intent(IntentType.ADJUST_LOCAL_BACKLIGHT, {"delta": 10}))
+    exe.execute_safe(Intent(IntentType.ADJUST_LOCAL_BACKLIGHT, {"delta": 20}))
+    state = exe.get_local_state()
+    assert state["backlight"] == 30
