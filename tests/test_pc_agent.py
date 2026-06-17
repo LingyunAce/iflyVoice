@@ -139,3 +139,32 @@ def test_reset_failures_is_public():
     from executor.pc_agent import PCAgentExecutor
     assert hasattr(PCAgentExecutor, "reset_failures"), "PCAgentExecutor 缺公开方法 reset_failures()"
     assert callable(PCAgentExecutor.reset_failures)
+
+
+@responses.activate
+def test_invalid_json_on_2xx_returns_internal_error(pc):
+    """2xx 响应含 invalid JSON 时，返回 ERR_INTERNAL（不是崩）"""
+    responses.add(
+        responses.POST,
+        "http://pc.local:18770/display/brightness",
+        body="not valid json {",
+        status=200,
+    )
+    result = pc.execute_safe(Intent(IntentType.SET_BRIGHTNESS, {"value": 50, "monitor_index": 0}))
+    assert result["ok"] is False
+    assert result["code"] == "ERR_INTERNAL"
+    assert "json" in result["err"].lower() or "invalid" in result["err"].lower()
+
+
+@responses.activate
+def test_invalid_json_on_4xx_returns_internal_error(pc):
+    """4xx 响应含 invalid JSON 时，返回 ERR_INTERNAL"""
+    responses.add(
+        responses.POST,
+        "http://pc.local:18770/display/brightness",
+        body="not valid json {",
+        status=404,
+    )
+    result = pc.execute_safe(Intent(IntentType.SET_BRIGHTNESS, {"value": 50, "monitor_index": 0}))
+    assert result["ok"] is False
+    assert result["code"] == "ERR_INTERNAL"

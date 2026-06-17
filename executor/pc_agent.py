@@ -53,15 +53,15 @@ def _do_http_with_retry(method: str, url: str, *, params=None, json_body=None, t
         if _is_business_error(resp):
             try:
                 return resp.json()
-            except Exception:
-                return {"ok": False, "err": f"PC 返回 {resp.status_code}", "code": "ERR_INTERNAL"}
+            except ValueError:
+                return {"ok": False, "err": f"PC 返回 {resp.status_code} 但 body 非 JSON", "code": "ERR_INTERNAL"}
 
         if _is_retryable_response(resp):
             raise PCAgentError(f"retryable status {resp.status_code}")
 
         try:
             return resp.json()
-        except Exception as e:
+        except ValueError as e:
             raise PCAgentError(f"invalid json: {e}") from e
 
     return _inner()
