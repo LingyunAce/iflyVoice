@@ -245,6 +245,25 @@ class VoicePipeline(QObject):
         self._mic_device = None                     # 麦克风设备（None=默认）
         self._model = "qwen3-vl:2b"                # LLM 模型名称
 
+        # Plan 2: Use ExecutorDispatcher for display/app/bilibili intent dispatch
+        from executor.dispatcher import ExecutorDispatcher
+        from executor.dev_stub import DevStubExecutor
+        from executor.pc_agent import PCAgentExecutor
+        from executor.local import LocalExecutor
+
+        try:
+            _cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "settings.json")
+            with open(_cfg_path, "r", encoding="utf-8") as _f:
+                _cfg = json.load(_f)
+        except Exception:
+            _cfg = {}
+        _winpc_url = _cfg.get("winpc_agent_url", "http://192.168.1.50:18770")
+        self.executor = ExecutorDispatcher(
+            pc_agent=PCAgentExecutor(_winpc_url, timeout=3.0, max_retries=2),
+            dev_stub=DevStubExecutor(),
+            local_executor=LocalExecutor(),
+        )
+
     # ── 公开方法 ─────────────────────────────────────────────────
     def start(self):
         """启动管线（后台线程加载模型并开始监听）"""
@@ -650,107 +669,9 @@ class VoicePipeline(QObject):
             self.error_occurred.emit(str(e))
             self._set_state(PipelineState.IDLE)
 
-    def _http_get_json(self, path, timeout=5):
-        """GET 请求 server 端点，返回 JSON dict"""
-        url = self._server_url + path
-        try:
-            resp = urlopen(url, timeout=timeout)
-            return json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            _flog(f"[HTTP] GET {path} 失败: {e}")
-            return None
-
-    def _http_post_json(self, path, data):
-        """POST 请求 server 端点，返回 JSON dict"""
-        url = self._server_url + path
-        try:
-            payload = json.dumps(data).encode()
-            req = Request(url, data=payload,
-                          headers={"Content-Type": "application/json"}, method="POST")
-            resp = urlopen(req, timeout=5)
-            return json.loads(resp.read().decode("utf-8"))
-        except Exception as e:
-            _flog(f"[HTTP] POST {path} 失败: {e}")
-            return None
-
-    # B站 wbi 签名混钥表
-    _BILI_MIXIN_TAB = [
-        46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
-        27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13,
-        37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4,
-        22, 25, 54, 21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52,
-    ]
-
-    def _bilibili_search_and_play(self, keyword):
-        """直接调用B站API搜索视频，打开第一个结果，返回播报文字"""
-        import hashlib, subprocess
-        from urllib.parse import quote, urlencode
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Referer": "https://www.bilibili.com",
-        }
-
-        # 1. 获取 wbi 签名密钥
-        nav_req = Request("https://api.bilibili.com/x/web-interface/nav", headers=headers)
-        nav_resp = urlopen(nav_req, timeout=8)
-        nav_data = json.loads(nav_resp.read().decode("utf-8"))
-        wbi_img = nav_data["data"]["wbi_img"]
-        img_key = wbi_img["img_url"].rsplit("/", 1)[1].split(".")[0]
-        sub_key = wbi_img["sub_url"].rsplit("/", 1)[1].split(".")[0]
-
-        # 2. wbi 签名
-        orig = img_key + sub_key
-        mixin_key = "".join([orig[i] for i in self._BILI_MIXIN_TAB])[:32]
-        params = {"search_type": "video", "keyword": keyword, "page": 1, "page_size": 5}
-        params["wts"] = int(__import__("time").time())
-        params = dict(sorted(params.items()))
-        query = urlencode(params)
-        params["w_rid"] = hashlib.md5((query + mixin_key).encode()).hexdigest()
-
-        # 3. 搜索请求
-        api_url = f"https://api.bilibili.com/x/web-interface/wbi/search/type?{urlencode(params)}"
-        req = Request(api_url, headers=headers)
-        resp = urlopen(req, timeout=10)
-        data = json.loads(resp.read().decode("utf-8"))
-
-        results = []
-        if data.get("code") == 0 and data.get("data", {}).get("result"):
-            for item in data["data"]["result"][:3]:
-                title = item.get("title", "").replace('<em class="keyword">', "").replace("</em>", "")
-                author = item.get("author", "")
-                bvid = item.get("bvid", "")
-                results.append({"title": title, "author": author, "bvid": bvid})
-
-        if not results:
-            # 无结果，打开搜索页
-            search_url = f"https://search.bilibili.com/video?keyword={quote(keyword)}"
-            subprocess.Popen(["cmd", "/c", "start", "", search_url],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=subprocess.CREATE_NO_WINDOW)
-            return f"未找到相关视频，已打开B站搜索页：{keyword}"
-
-        # 4. 打开第一个视频
-        video_url = f"https://www.bilibili.com/video/{results[0]['bvid']}"
-        subprocess.Popen(["cmd", "/c", "start", "", video_url],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                        creationflags=subprocess.CREATE_NO_WINDOW)
-
-        # 5. 构造播报文字
-        parts = [f"为您找到{len(results)}个视频"]
-        for i, v in enumerate(results):
-            parts.append(f"第{i+1}个：{v['title']}，作者{v['author']}")
-        parts.append(f"正在为您播放：{results[0]['title']}")
-        return "，".join(parts)
 
     def _count_monitors(self):
-        """返回 DDC/CI 物理监视器数量"""
-        try:
-            r = self._http_get_json("/ddcci/monitor_count")
-            if r and r.get("count"):
-                return r["count"]
-        except Exception:
-            pass
+        """返回监视器数量（Plan 2: 简化，默认 1 台）"""
         return 1
 
     @staticmethod
@@ -793,201 +714,169 @@ class VoicePipeline(QObject):
             return None
 
     def _execute_display_control(self, intent):
-        """执行显示器控制命令，返回 TTS 回复文字"""
+        """执行显示器控制命令，返回 TTS 回复文字（Plan 2: 通过 ExecutorDispatcher 调度）"""
+        from executor.base import Intent, IntentType
+
         action = intent["action"]
         control = intent.get("control", "")
 
         # ── 输入源切换 ───────────────────────────────────────────────
         if action == "list_inputs":
-            try:
-                r = self._http_get_json("/ddcci/input_sources")
-                if not (r or {}).get("supported"):
-                    return "当前显示器不支持输入源检测"
-                sources = r.get("sources", [])
-                current = r.get("current_name", "")
-                extended = r.get("extended_encoding", False)
-                if extended:
-                    return (f"当前输入源：{current}（扩展编码模式，内置Android系统），"
-                            f"可用：{', '.join(s.get('name','') for s in sources)}。"
-                            f"DDC/CI无法切换到Android，请使用显示器自带OSD或遥控器")
-                lines = [f"当前输入源：{current}，可用输入源："]
-                for s in sources:
-                    cur_mark = " ← 当前" if s.get("is_current") else ""
-                    lines.append(f"{s.get('name','')}{cur_mark}")
-                return "，".join(lines)
-            except Exception as e:
-                return f"查询输入源失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.LIST_INPUTS, {"monitor_index": 0}))
+            if not result.get("ok"):
+                return f"查询输入源失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            sources = data.get("supported", data.get("sources", []))
+            current = data.get("current", data.get("current_name", ""))
+            if not sources:
+                return "当前显示器不支持输入源检测"
+            lines = [f"当前输入源：{current}，可用输入源："]
+            for s in sources:
+                name = s.get("name", s) if isinstance(s, dict) else str(s)
+                cur_mark = "（当前）" if name == current else ""
+                lines.append(f"{name}{cur_mark}")
+            return "，".join(lines)
 
         if action == "switch_input":
             code = intent.get("code")
             if not code:
-                # 列出可用输入源
-                try:
-                    r = self._http_get_json("/ddcci/input_sources")
-                    if not (r or {}).get("supported"):
-                        return "当前显示器不支持输入源切换"
-                    sources = r.get("sources", [])
-                    names = [s.get("name", "") for s in sources]
-                    current = r.get("current_name", "")
-                    extended = r.get("extended_encoding", False)
-                    if extended:
-                        return (f"当前输入源：{current}（扩展编码模式），"
-                                f"可用：{', '.join(names)}。内置系统源无法通过DDC/CI切换，"
-                                f"请使用显示器OSD或遥控器切换到HDMI输入源")
-                    return f"当前输入源：{current}，可用：{', '.join(names)}"
-                except Exception as e:
-                    return f"查询输入源失败：{e}"
-            try:
-                r = self._http_post_json("/ddcci/input", {"code": code})
-                if not (r or {}).get("success"):
-                    err = (r or {}).get("error", "切换失败")
-                    # 回退成功时
-                    if (r or {}).get("restored"):
-                        old_name = (r or {}).get("old_name", "")
-                        return f"{err}，已恢复到{old_name}"
-                    return err
-                name = (r or {}).get("name", f"0x{code:02X}")
-                old_name = (r or {}).get("old_name", "")
-                return f"已从{old_name}切换到{name}" if old_name else f"已切换到{name}"
-            except Exception as e:
-                return f"输入源切换失败：{e}"
+                result = self.executor.dispatch(Intent(IntentType.LIST_INPUTS, {"monitor_index": 0}))
+                if not result.get("ok"):
+                    return f"查询输入源失败：{result.get('err', '?')}"
+                data = result.get("data", {})
+                sources = data.get("supported", data.get("sources", []))
+                current = data.get("current", data.get("current_name", ""))
+                if not sources:
+                    return "当前显示器不支持输入源切换"
+                names = [s.get("name", s) if isinstance(s, dict) else str(s) for s in sources]
+                return f"当前输入源：{current}，可用：{', '.join(names)}"
+            result = self.executor.dispatch(Intent(IntentType.SET_INPUT, {"code": code, "monitor_index": 0}))
+            if not result.get("ok"):
+                return result.get("err", "切换失败")
+            data = result.get("data", {})
+            name = data.get("name", f"0x{code:02X}")
+            return f"已切换到{name}"
 
         # ── B站搜索 ───────────────────────────────────────────
         if action == "bilibili_search":
             keyword = intent.get("keyword", "")
             if not keyword:
                 return "搜索关键词无效"
-            try:
-                return self._bilibili_search_and_play(keyword)
-            except Exception as e:
-                _flog(f"[B站] 搜索异常: {e}")
-                return f"B站搜索失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.BILIBILI_SEARCH, {"keyword": keyword}))
+            if not result.get("ok"):
+                return f"B站搜索失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            results = data.get("results", [])
+            if not results:
+                return "未找到相关视频"
+            parts = [f"为您找到{len(results)}个视频"]
+            for i, v in enumerate(results):
+                parts.append(f"第{i+1}个：{v.get('title', '')}")
+            parts.append(f"正在为您播放：{results[0].get('title', '')}")
+            return "，".join(parts)
 
         # ── 桌面应用控制 ────────────────────────────────────────
         if action == "list_apps":
-            try:
-                from app_manager import get_apps, list_gui_apps
-                installed = get_apps()
-                running = {name.lower().replace(".exe", "") for name, _ in list_gui_apps()}
-                if not installed:
-                    return "未检测到已安装的应用"
-                names = []
-                for app_name in sorted(installed.keys()):
-                    tag = "（已打开）" if app_name in running else ""
-                    names.append(f"{app_name}{tag}")
-                return f"共有{len(names)}个应用：{'、'.join(names)}"
-            except Exception as e:
-                return f"获取应用列表失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.LIST_APPS, {}))
+            if not result.get("ok"):
+                return f"获取应用列表失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            apps = data.get("apps", [])
+            if not apps:
+                return "未检测到已安装的应用"
+            names = [a.get("name", a) if isinstance(a, dict) else str(a) for a in apps]
+            return f"共有{len(names)}个应用：{'、'.join(names)}"
 
         if action == "open_app":
             app_name = intent.get("app_name", "")
             if not app_name:
                 return "未指定应用名称"
-            try:
-                from app_manager import launch_app
-                ok, msg = launch_app(app_name)
-                return msg
-            except Exception as e:
-                return f"打开应用失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.LAUNCH_APP, {"name": app_name}))
+            if not result.get("ok"):
+                return f"打开应用失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            return data.get("msg", f"已打开{app_name}")
 
         if action == "close_app":
             app_name = intent.get("app_name", "")
             if not app_name:
                 return "未指定应用名称"
-            try:
-                from app_manager import close_app
-                ok, msg = close_app(app_name)
-                return msg
-            except Exception as e:
-                return f"关闭应用失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.CLOSE_APP, {"name": app_name}))
+            if not result.get("ok"):
+                return f"关闭应用失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            return data.get("msg", f"已关闭{app_name}")
 
         if action == "switch_app":
             app_name = intent.get("app_name", "")
             if not app_name:
                 return "未指定应用名称"
-            try:
-                from app_manager import switch_to_app
-                ok, msg = switch_to_app(app_name)
-                return msg
-            except Exception as e:
-                return f"切换应用失败：{e}"
+            result = self.executor.dispatch(Intent(IntentType.FOCUS_APP, {"name": app_name}))
+            if not result.get("ok"):
+                return f"切换应用失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            return data.get("msg", f"已切换到{app_name}")
 
-        # ── 常规亮度/对比度/色温/音量 ──────────────────────────────
+        # ── 亮度/对比度/色温/音量（通过 ExecutorDispatcher）──────────
+        _CTRL_NAMES = {"brightness": "亮度", "contrast": "对比度",
+                        "volume": "音量", "color_temp": "色温"}
 
-        # 读取 displayType
-        dt_resp = self._http_get_json("/config/displayType")
-        display_type = (dt_resp or {}).get("displayType", "native")
-
-        # 确定端点前缀
-        if control == "volume":
-            prefix = "/native"
-        elif control in ("contrast", "color_temp"):
-            # 对比度和色温优先走 DDC/CI（硬件控制），不依赖 displayType 配置
-            prefix = "/ddcci"
-        elif display_type == "adb":
-            prefix = "/ddcci"
-        else:
-            prefix = "/native"
-
-        # 获取当前值（adjust 时需要）
-        current = None
-        if action == "adjust":
-            if control == "volume":
-                current = self._get_system_volume()
-                if current is not None:
-                    _flog(f"[控制] 实际音量: {current}%")
-                else:
-                    r = self._http_get_json("/native/volume")
-                    current = (r or {}).get("volume", 50)
-            elif control == "brightness":
-                if prefix == "/ddcci":
-                    r = self._http_get_json("/ddcci/status")
-                    current = (r or {}).get("brightness", 50)
-                else:
-                    r = self._http_get_json("/native/status")
-                    current = (r or {}).get("brightness", 50)
-            elif control == "contrast":
-                r = self._http_get_json("/ddcci/contrast_read")
-                current = (r or {}).get("value", 50)
-            elif control == "color_temp":
-                r = self._http_get_json("/native/status")
-                current = (r or {}).get("colorTemp", 50)
-
-        # 计算目标值
         if action == "set":
             value = intent["value"]
-        else:  # adjust
-            base = current if current is not None else 50
-            value = max(0, min(100, base + intent["delta"]))
+            _SET_MAP = {
+                "brightness": IntentType.SET_BRIGHTNESS,
+                "contrast": IntentType.SET_CONTRAST,
+                "color_temp": IntentType.SET_COLOR_TEMP,
+                "volume": IntentType.SET_VOLUME,
+            }
+            intent_type = _SET_MAP.get(control)
+            if not intent_type:
+                return f"不支持的控制项：{control}"
+            params = {"value": value}
+            if control in ("brightness", "contrast", "color_temp"):
+                params["monitor_index"] = 0
+            result = self.executor.dispatch(Intent(intent_type, params))
+            if not result.get("ok"):
+                return f"设置{_CTRL_NAMES.get(control, control)}失败：{result.get('err', '?')}"
+            data = result.get("data", {})
+            _flog(f"[控制] {control} set → {value}")
+            mon_name = data.get("monitorName", "")
+            if mon_name and self._count_monitors() > 1:
+                return f"好的，已将{mon_name}的{_CTRL_NAMES.get(control, control)}设为{value}%"
+            return f"好的，已将{_CTRL_NAMES.get(control, control)}设为{value}%"
 
-        # 执行
-        mon_name = ""
-        if control == "volume":
-            actual = self._set_system_volume(value)
-            if actual is not None:
-                value = actual
-            else:
-                endpoint = f"{prefix}/{control}"
-                self._http_post_json(endpoint, {"value": value})
-        else:
-            endpoint = f"{prefix}/{control}"
-            result = self._http_post_json(endpoint, {"value": value})
-            if isinstance(result, dict):
-                mon_name = result.get("monitorName", "")
-                # DDC/CI 失败时返回提示
-                if prefix == "/ddcci" and not result.get("success", True):
-                    ctrl_name = {"contrast": "对比度", "color_temp": "色温"}.get(control, control)
-                    return f"当前显示器不支持DDC/CI{ctrl_name}调节。"
-        _flog(f"[控制] {control} → {value} (displayType={display_type}, monitor='{mon_name}')")
+        if action == "adjust":
+            delta = intent["delta"]
+            if control in ("brightness", "contrast", "volume"):
+                _ADJ_MAP = {
+                    "brightness": IntentType.ADJUST_BRIGHTNESS,
+                    "contrast": IntentType.ADJUST_CONTRAST,
+                    "volume": IntentType.ADJUST_VOLUME,
+                }
+                intent_type = _ADJ_MAP[control]
+                params = {"delta": delta}
+                if control in ("brightness", "contrast"):
+                    params["monitor_index"] = 0
+                result = self.executor.dispatch(Intent(intent_type, params))
+                if not result.get("ok"):
+                    return f"调节{_CTRL_NAMES.get(control, control)}失败：{result.get('err', '?')}"
+                data = result.get("data", {})
+                actual = data.get("actual", data.get("value"))
+                _flog(f"[控制] {control} adjust delta={delta}, actual={actual}")
+                if actual is not None:
+                    return f"好的，已将{_CTRL_NAMES.get(control, control)}设为{actual}%"
+                direction = "调高" if delta > 0 else "调低"
+                return f"好的，已将{_CTRL_NAMES.get(control, control)}{direction}{abs(delta)}%"
+            elif control == "color_temp":
+                # color_temp 没有 ADJUST 意图，使用默认基准 50 + delta
+                value = max(0, min(100, 50 + delta))
+                result = self.executor.dispatch(Intent(IntentType.SET_COLOR_TEMP, {"value": value, "monitor_index": 0}))
+                if not result.get("ok"):
+                    return f"调节色温失败：{result.get('err', '?')}"
+                _flog(f"[控制] color_temp adjust → {value}")
+                return f"好的，已将色温设为{value}%"
 
-        # 构造 TTS 回复
-        ctrl_name = {"brightness": "亮度", "contrast": "对比度", "volume": "音量", "color_temp": "色温"}.get(control, control)
-        # 多显示器时才在回复中说明是哪个显示器
-        if mon_name and self._count_monitors() > 1:
-            reply = f"好的，已将{mon_name}的{ctrl_name}设为{value}%"
-        else:
-            reply = f"好的，已将{ctrl_name}设为{value}%"
-        return reply
+        return "不支持的控制操作"
 
     def _llm_intent_detect(self, text):
         """用 LLM 判断文本是否包含显示器控制意图（含语义理解，支持复合意图）"""
