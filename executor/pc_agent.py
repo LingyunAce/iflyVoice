@@ -135,6 +135,11 @@ class PCAgentExecutor(Executor):
     def _record_success(self):
         self._consecutive_failures = 0
 
+    def reset_failures(self) -> None:
+        """清零连续失败计数（公开 API，给 dispatcher 健康恢复时调用）"""
+        self._consecutive_failures = 0
+        self._last_failure_time = 0.0
+
     @property
     def consecutive_failures(self) -> int:
         return self._consecutive_failures

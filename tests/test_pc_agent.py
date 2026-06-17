@@ -120,3 +120,22 @@ def test_health_check(pc):
     responses.reset()
     responses.add(responses.GET, "http://pc.local:18770/health", json={"ok": False}, status=500)
     assert pc.health_check() is False
+
+
+def test_reset_failures_clears_counter():
+    """reset_failures() 应清零 _consecutive_failures"""
+    from executor.pc_agent import PCAgentExecutor
+    pc = PCAgentExecutor(base_url="http://pc.local:18770")
+    pc._record_failure()
+    pc._record_failure()
+    pc._record_failure()
+    assert pc.consecutive_failures == 3
+    pc.reset_failures()
+    assert pc.consecutive_failures == 0
+
+
+def test_reset_failures_is_public():
+    """reset_failures 应是公开方法（无下划线前缀）"""
+    from executor.pc_agent import PCAgentExecutor
+    assert hasattr(PCAgentExecutor, "reset_failures"), "PCAgentExecutor 缺公开方法 reset_failures()"
+    assert callable(PCAgentExecutor.reset_failures)

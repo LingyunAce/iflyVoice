@@ -87,5 +87,5 @@ class ExecutorDispatcher:
             self._health_check_ok = self.pc_agent.health_check()
             if self._health_check_ok:
                 # 健康了，清零失败计数
-                self.pc_agent._record_success()  # TODO: replace with reset_failures() in B.3
+                self.pc_agent.reset_failures()
             return self._health_check_ok
