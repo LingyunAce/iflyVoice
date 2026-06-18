@@ -264,22 +264,31 @@ class VoicePipeline(QObject):
             local_executor=LocalExecutor(),
         )
 
-        # NPU ASR (Plan 3)
+        # NPU ASR (Plan 3) — 优先 .rknn (NPU)，兜底 .onnx (CPU)
         self._npu_asr = None
         if _cfg.get("npu_asr_enabled", False):
             try:
                 from npu.rknn_asr import RknnASR
                 import os as _os
-                model_path = _os.path.join(_os.path.dirname(__file__), "models", "sensevoice_small.rknn")
-                if _os.path.exists(model_path):
+                models_dir = _os.path.join(_os.path.dirname(__file__), "models")
+                rknn_path = _os.path.join(models_dir, "sensevoice_small.rknn")
+                onnx_path = _os.path.join(models_dir, "sensevoice_small.onnx")
+
+                model_path = None
+                if _os.path.exists(rknn_path):
+                    model_path = rknn_path
+                elif _os.path.exists(onnx_path):
+                    model_path = onnx_path
+
+                if model_path:
                     self._npu_asr = RknnASR(model_path)
                     if self._npu_asr.is_loaded():
-                        _flog("[NPU] ASR model loaded successfully")
+                        _flog(f"[NPU] ASR loaded ({self._npu_asr.get_backend()}): {model_path}")
                     else:
-                        _flog("[NPU] ASR model load failed, falling back to remote")
+                        _flog(f"[NPU] ASR load failed, falling back to remote")
                         self._npu_asr = None
                 else:
-                    _flog(f"[NPU] Model file not found: {model_path}")
+                    _flog(f"[NPU] No ASR model found in {models_dir}")
             except Exception as e:
                 _flog(f"[NPU] ASR init exception: {e}")
 
