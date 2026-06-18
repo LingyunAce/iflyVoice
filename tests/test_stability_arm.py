@@ -48,7 +48,7 @@ def get_temperature():
     return -1
 
 
-@pytest.mark.skipif(not ARM64, reason="ARM64-only stability test")
+@pytest.mark.skipif(not os.environ.get("RUN_STABILITY"), reason="Set RUN_STABILITY=1 to run 30min stability test")
 @pytest.mark.slow
 def test_stability(duration_seconds=1800):
     print(f"=== Stability Test ({duration_seconds}s) ===")
