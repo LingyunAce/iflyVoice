@@ -3,6 +3,11 @@
 set +e  # don't exit on first failure; report per-step
 cd "$(dirname "$0")/.."
 
+# Activate venv if present
+if [ -d .venv ]; then
+    source .venv/bin/activate
+fi
+
 GREEN='\033[0;32m'; RED='\033[0;31m'; YEL='\033[1;33m'; NC='\033[0m'
 pass=0; fail=0; skip=0
 
