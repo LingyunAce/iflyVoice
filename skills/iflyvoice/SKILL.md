@@ -1,0 +1,117 @@
+---
+name: iflyvoice
+description: "控制 RK3576 板子的显示器亮度、系统音量、桌面应用。HTTP API 在 http://127.0.0.1:18766/api/v1/tools/。使用前确认 iflyVoice 服务在运行（curl http://127.0.0.1:18766/health）。"
+---
+
+# iflyVoice 硬件控制
+
+iflyVoice 在 127.0.0.1:18766 提供 HTTP API，控制 RK3576 板子的本地硬件。
+
+## 前置条件
+
+- iflyVoice 服务在运行：`bash ~/.openclaw/workspace/skills/iflyvoice/start-iflyvoice.sh`
+- 健康检查：`curl -fsS http://127.0.0.1:18766/health`（应返回 `{"ok": true}`）
+- 服务挂了 → 提示用户运行 `start-iflyvoice.sh`，**不要重试无限循环**
+
+## 可用能力
+
+| 能力 | 工具 | 说明 |
+|------|------|------|
+| 亮度 | `set_brightness` | 设为 0-100 的绝对值 |
+| 亮度 | `adjust_brightness` | 增量调整（正/负） |
+| 音量 | `set_volume` | 设为 0-100 的绝对值 |
+| 音量 | `adjust_volume` | 增量调整（正/负） |
+| 应用 | `launch_app` | 启动应用（按名字） |
+| 应用 | `close_app` | 关闭应用 |
+| 应用 | `focus_app` | 切换/聚焦已运行应用 |
+| 应用 | `list_apps` | 列出当前运行的 GUI 进程 |
+| 显示器 | `list_monitors` | 列出已连接的输出 |
+
+## 调用方式
+
+使用 `exec` 工具调 curl。**必须保留完整引号**：
+
+```bash
+# 亮度调到 60
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/set_brightness \
+  -H "Content-Type: application/json" \
+  -d '{"value":60}'
+
+# 亮度 +10（增量）
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/adjust_brightness \
+  -H "Content-Type: application/json" \
+  -d '{"delta":10}'
+
+# 音量调到 30
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/set_volume \
+  -H "Content-Type: application/json" \
+  -d '{"value":30}'
+
+# 音量 +20
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/adjust_volume \
+  -H "Content-Type: application/json" \
+  -d '{"delta":20}'
+
+# 打开 firefox
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/launch_app \
+  -H "Content-Type: application/json" \
+  -d '{"name":"firefox"}'
+
+# 关闭 firefox
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/close_app \
+  -H "Content-Type: application/json" \
+  -d '{"name":"firefox"}'
+
+# 切换到 firefox
+curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/focus_app \
+  -H "Content-Type: application/json" \
+  -d '{"name":"firefox"}'
+
+# 列出已运行应用
+curl -fsS http://127.0.0.1:18766/api/v1/tools/list_apps
+
+# 列出已连接显示器
+curl -fsS http://127.0.0.1:18766/api/v1/tools/list_monitors
+```
+
+## 失败处理
+
+返回 `ok: false` 时：
+- `err` 字段是人类可读错误，**用自然语言告诉用户**
+- `code` 字段是错误码（ERR_LOCAL_BACKLIGHT / ERR_LOCAL_AUDIO / ERR_APP_NOT_FOUND / ERR_APP_NOT_RUNNING / ERR_NO_WINDOW_MANAGER / ERR_UNSUPPORTED / ERR_BAD_REQUEST）
+- 7（curl 退出码）= 服务未起 → 提示运行 `start-iflyvoice.sh`
+
+## 能力边界
+
+**能做**：
+- 调亮度（依赖板子有 backlight 设备或 xrandr）
+- 调音量（依赖 PulseAudio 运行）
+- 启动/关闭/切换大部分桌面应用（firefox、chromium、gnome-terminal、code 等）
+
+**不能做**：
+- B 站视频搜索（本期不支持，ERR_UNSUPPORTED）
+- 切换显示器输入源（板子无 DDC-CI 硬件）
+- 关闭/重启系统
+- 任何破坏性操作（rm -rf、kill 关键进程等）
+
+## 中文指令示例
+
+| 用户说 | 你应执行 |
+|--------|---------|
+| 把屏幕调亮一点 | `adjust_brightness` `{"delta":10}` |
+| 把屏幕调暗一点 | `adjust_brightness` `{"delta":-10}` |
+| 亮度调到 50 | `set_brightness` `{"value":50}` |
+| 太刺眼了 | `adjust_brightness` `{"delta":-15}` |
+| 声音大点 | `adjust_volume` `{"delta":15}` |
+| 音量调到 80 | `set_volume` `{"value":80}` |
+| 打开浏览器 | `launch_app` `{"name":"firefox"}` |
+| 关闭 firefox | `close_app` `{"name":"firefox"}` |
+| 切到终端 | `focus_app` `{"name":"terminal"}` |
+| 现在跑着什么应用 | `list_apps` |
+
+## 注意事项
+
+- 用户说"亮一点"而当前是 90 → 调到 100，不要超过
+- 用户说"打开 XX"但找不到 XX → 提示当前可用的应用
+- 每次硬件操作后**用 1-2 句自然语言回复用户**，不要说"已发送 curl 请求"
+- 操作失败时给出**具体原因**（不只是"操作失败"）
