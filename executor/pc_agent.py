@@ -5,10 +5,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 import requests
-from tenacity import (
-    retry, stop_after_attempt, wait_exponential,
-    retry_if_exception_type
-)
+# tenacity 是 lazy import：模块可被 import 而不依赖 tenacity
+# （Phase 1 板子上不装 tenacity，pc_agent 不被使用）
 from executor.base import Executor, Intent, IntentType, ExecutorError
 
 
@@ -29,6 +27,11 @@ def _is_business_error(resp: requests.Response) -> bool:
 
 def _do_http_with_retry(method: str, url: str, *, params=None, json_body=None, timeout: float = 3.0, max_attempts: int = 3) -> dict:
     """带重试的 HTTP 调用。重试：5xx/429/timeout/连接错误，指数退避 1s/2s/4s。"""
+    from tenacity import (
+        retry, stop_after_attempt, wait_exponential,
+        retry_if_exception_type
+    )
+
     @retry(
         stop=stop_after_attempt(max_attempts),
         wait=wait_exponential(multiplier=1, min=1, max=4),
