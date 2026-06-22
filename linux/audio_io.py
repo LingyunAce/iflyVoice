@@ -71,6 +71,17 @@ def set_volume(percent: int) -> bool:
         return False
 
 
+def _sink_channels(sink) -> list:
+    """Extract per-channel volume values from a sink.
+
+    Compatible with pulsectl 24+ (.values) and older versions (.value).
+    """
+    vol = sink.volume
+    if hasattr(vol, "values"):           # pulsectl >= 24
+        return list(vol.values)
+    return list(vol.value)               # pulsectl < 24
+
+
 def get_volume() -> int:
     """Get current system volume (0-100). Returns -1 on error.
 
@@ -84,8 +95,7 @@ def get_volume() -> int:
             if not sinks:
                 return -1
             first_sink = sinks[0]
-            # first_sink.volume.value is a list (one per channel); average
-            channels = first_sink.volume.value
+            channels = _sink_channels(first_sink)
             if not channels:
                 return -1
             avg = sum(channels) / len(channels)
