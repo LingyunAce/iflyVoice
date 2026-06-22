@@ -1,4 +1,4 @@
-"""Audio input/output — sounddevice wrapper, supports USB/HDA/HDMI device filtering"""
+"""Audio input/output (sounddevice wrapper, USB/HDA/HDMI device filtering) + system volume (pulsectl, Linux only)"""
 from __future__ import annotations
 from typing import Optional
 import sounddevice as sd
@@ -74,8 +74,8 @@ def set_volume(percent: int) -> bool:
 def get_volume() -> int:
     """Get current system volume (0-100). Returns -1 on error.
 
-    Reads the first available sink. If multiple sinks exist, returns
-    the average across them rounded to int.
+    Reads the volume of the first available PulseAudio sink.
+    Each channel of the sink is averaged and rounded to int.
     """
     try:
         import pulsectl

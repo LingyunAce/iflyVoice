@@ -122,3 +122,22 @@ def test_set_volume_clamps_to_0_100():
     # 150% 应被夹到 100%，对应 factor=1.0
     assert all(0.0 <= f <= 1.0 for f in captured_factor)
     assert any(abs(f - 1.0) < 1e-9 for f in captured_factor)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="pulsectl requires Linux (libpulse.so.0)")
+def test_get_volume_no_sinks_returns_minus_one():
+    """get_volume() 在无 sink 时返回 -1"""
+    from linux import audio_io
+    from unittest.mock import MagicMock, patch
+
+    mock_pulse_instance = MagicMock()
+    mock_pulse_instance.__enter__ = MagicMock(return_value=mock_pulse_instance)
+    mock_pulse_instance.__exit__ = MagicMock(return_value=False)
+    mock_pulse_instance.sink_list = MagicMock(return_value=[])  # 空 list
+
+    class FakePulsectl:
+        Pulse = MagicMock(return_value=mock_pulse_instance)
+
+    with patch.dict(sys.modules, {"pulsectl": FakePulsectl}):
+        result = audio_io.get_volume()
+    assert result == -1
