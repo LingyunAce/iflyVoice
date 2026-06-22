@@ -42,32 +42,50 @@ def test_get_default_input_device():
 @pytest.mark.skipif(sys.platform == "win32", reason="pulsectl requires Linux (libpulse.so.0)")
 def test_set_volume_uses_pulsectl():
     """set_volume(60) 调 PulseAudio 把音量设到 60%"""
+    import sys
     from linux import audio_io
+    from unittest.mock import MagicMock
+
     mock_sink = MagicMock()
     mock_sink.volume = MagicMock()
     mock_pulse_instance = MagicMock()
     mock_pulse_instance.__enter__ = MagicMock(return_value=mock_pulse_instance)
     mock_pulse_instance.__exit__ = MagicMock(return_value=False)
     mock_pulse_instance.sink_list = MagicMock(return_value=[mock_sink])
-    with patch.object(audio_io, "Pulse", create=True, return_value=mock_pulse_instance), \
-         patch.object(audio_io, "PulseVolumeInfo", create=True) as mock_pvi:
-        mock_pvi.return_value.with_factor = MagicMock(return_value=MagicMock())
+    mock_pulse_instance.sink_volume_set = MagicMock()
+
+    fake_pvi = MagicMock()
+    fake_pvi.with_factor = MagicMock(return_value=MagicMock())
+
+    class FakePulsectl:
+        Pulse = MagicMock(return_value=mock_pulse_instance)
+        PulseVolumeInfo = MagicMock(return_value=fake_pvi)
+
+    with patch.dict(sys.modules, {"pulsectl": FakePulsectl}):
         result = audio_io.set_volume(60)
     assert result is True
-    mock_pulse_instance.sink_volume_set.assert_called()
+    # 至少调用了一次 sink_volume_set
+    assert mock_pulse_instance.sink_volume_set.call_count == 1
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="pulsectl requires Linux (libpulse.so.0)")
 def test_get_volume_returns_percent():
     """get_volume() 返回 0-100 的整数百分比"""
+    import sys
     from linux import audio_io
+    from unittest.mock import MagicMock
+
     mock_sink = MagicMock()
     mock_sink.volume.value = [0.42, 0.42]  # 双声道 42%
     mock_pulse_instance = MagicMock()
     mock_pulse_instance.__enter__ = MagicMock(return_value=mock_pulse_instance)
     mock_pulse_instance.__exit__ = MagicMock(return_value=False)
     mock_pulse_instance.sink_list = MagicMock(return_value=[mock_sink])
-    with patch.object(audio_io, "Pulse", create=True, return_value=mock_pulse_instance):
+
+    class FakePulsectl:
+        Pulse = MagicMock(return_value=mock_pulse_instance)
+
+    with patch.dict(sys.modules, {"pulsectl": FakePulsectl}):
         result = audio_io.get_volume()
     assert result == 42
 
@@ -75,20 +93,30 @@ def test_get_volume_returns_percent():
 @pytest.mark.skipif(sys.platform == "win32", reason="pulsectl requires Linux (libpulse.so.0)")
 def test_set_volume_clamps_to_0_100():
     """set_volume 越界值被夹到 0-100"""
+    import sys
     from linux import audio_io
+    from unittest.mock import MagicMock
+
     captured_factor = []
     mock_sink = MagicMock()
     mock_pulse_instance = MagicMock()
     mock_pulse_instance.__enter__ = MagicMock(return_value=mock_pulse_instance)
     mock_pulse_instance.__exit__ = MagicMock(return_value=False)
     mock_pulse_instance.sink_list = MagicMock(return_value=[mock_sink])
+    mock_pulse_instance.sink_volume_set = MagicMock()
 
     def fake_with_factor(f):
         captured_factor.append(f)
         return MagicMock()
-    with patch.object(audio_io, "Pulse", create=True, return_value=mock_pulse_instance), \
-         patch.object(audio_io, "PulseVolumeInfo", create=True) as mock_pvi:
-        mock_pvi.return_value.with_factor = fake_with_factor
+
+    fake_pvi = MagicMock()
+    fake_pvi.with_factor = fake_with_factor
+
+    class FakePulsectl:
+        Pulse = MagicMock(return_value=mock_pulse_instance)
+        PulseVolumeInfo = MagicMock(return_value=fake_pvi)
+
+    with patch.dict(sys.modules, {"pulsectl": FakePulsectl}):
         result = audio_io.set_volume(150)
     assert result is True
     # 150% 应被夹到 100%，对应 factor=1.0
