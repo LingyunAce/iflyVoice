@@ -154,3 +154,35 @@ def test_local_bilibili_search_returns_unsupported():
     result = exe.execute_safe(Intent(IntentType.BILIBILI_SEARCH, {"keyword": "test"}))
     assert result["ok"] is False
     assert result["code"] == "ERR_UNSUPPORTED"
+
+
+# ── I2/I3 regression tests ────────────────────────────
+
+def test_local_set_contrast_clamps_value():
+    """SET_CONTRAST value 越界被 clamp"""
+    from executor.local import LocalExecutor
+    from executor.base import IntentType
+    exe = LocalExecutor()
+    result = exe.execute_safe(Intent(IntentType.SET_CONTRAST, {"value": 999}))
+    assert result["ok"] is True
+    assert result["data"]["value"] == 100  # 999 → 100
+
+
+def test_local_set_color_temp_clamps_value():
+    """SET_COLOR_TEMP value 越界被 clamp"""
+    from executor.local import LocalExecutor
+    from executor.base import IntentType
+    exe = LocalExecutor()
+    result = exe.execute_safe(Intent(IntentType.SET_COLOR_TEMP, {"value": -50}))
+    assert result["ok"] is True
+    assert result["data"]["value"] == 0  # -50 → 0
+
+
+def test_local_adjust_contrast_uses_delta():
+    """ADJUST_CONTRAST: 50 基线 + delta"""
+    from executor.local import LocalExecutor
+    from executor.base import IntentType
+    exe = LocalExecutor()
+    result = exe.execute_safe(Intent(IntentType.ADJUST_CONTRAST, {"delta": 20}))
+    assert result["ok"] is True
+    assert result["data"]["value"] == 70  # 50 + 20

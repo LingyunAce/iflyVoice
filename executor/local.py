@@ -52,13 +52,16 @@ class LocalExecutor(Executor):
         if t == IntentType.ADJUST_BRIGHTNESS:
             return LocalExecutor._adjust_brightness(intent.params.get("delta", 0))
         if t == IntentType.SET_CONTRAST:
-            return {"ok": True, "data": {"value": intent.params.get("value", 50),
-                                          "note": "xrandr software contrast"}}
+            v = max(0, min(100, int(intent.params.get("value", 50))))
+            return {"ok": True, "data": {"value": v, "note": "xrandr software contrast"}}
         if t == IntentType.ADJUST_CONTRAST:
-            return {"ok": True, "data": {"value": 50, "note": "xrandr software contrast"}}
+            # MVP: 用 50 作为"当前"基线（没有真实读硬件）
+            cur = 50
+            new_val = max(0, min(100, cur + int(intent.params.get("delta", 0))))
+            return {"ok": True, "data": {"value": new_val, "note": "xrandr software contrast"}}
         if t == IntentType.SET_COLOR_TEMP:
-            return {"ok": True, "data": {"value": intent.params.get("value", 50),
-                                          "note": "xrandr gamma color temp"}}
+            v = max(0, min(100, int(intent.params.get("value", 50))))
+            return {"ok": True, "data": {"value": v, "note": "xrandr gamma color temp"}}
         if t == IntentType.SET_INPUT:
             return {"ok": False, "err": "板子无 DDC-CI 切换输入源",
                     "code": "ERR_UNSUPPORTED"}
