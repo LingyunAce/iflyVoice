@@ -83,8 +83,12 @@ def get_volume() -> int:
             sinks = pulse.sink_list()
             if not sinks:
                 return -1
-            # sinks[*].volume.value is a list (one per channel); average
-            avg = sum(s.volume.value) / len(s.volume.value)
+            first_sink = sinks[0]
+            # first_sink.volume.value is a list (one per channel); average
+            channels = first_sink.volume.value
+            if not channels:
+                return -1
+            avg = sum(channels) / len(channels)
             return max(0, min(100, round(avg * 100)))
     except Exception:
         return -1
