@@ -52,6 +52,8 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"msg":"exiting"}')
             import sys; sys.exit(0)
             return
+        elif self.path.startswith("/api/v1/tools/"):
+            self._handle_tool("GET")
         elif self.path.startswith("/config/"):
             self._handle_config("GET")
         elif self.path.startswith("/ollama/"):
@@ -64,7 +66,9 @@ class Handler(BaseHTTPRequestHandler):
             self._serve_static()
 
     def do_POST(self):
-        if self.path.startswith("/config/"):
+        if self.path.startswith("/api/v1/tools/"):
+            self._handle_tool("POST")
+        elif self.path.startswith("/config/"):
             self._handle_config("POST")
         elif self.path.startswith("/ollama/"):
             self._proxy("POST")
@@ -308,6 +312,86 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send_json(404, {"ok": False, "err": f"unknown native endpoint: {endpoint}"})
 
+    def _handle_tool(self, method):
+        """OpenClaw 集成的 HTTP tool 端点。
+        路径格式：/api/v1/tools/<tool_name>
+        body：JSON dict（参数）
+        返回：{"ok": bool, "data": {...}, "err": "...", "code": "..."}
+        """
+        path = self.path.split("?")[0]
+        tool_name = path.replace("/api/v1/tools/", "", 1).strip("/")
+
+        # 工具名 → IntentType 映射
+        TOOL_TO_INTENT = {
+            "set_brightness": ("SET_BRIGHTNESS", {"value": "value"}),
+            "adjust_brightness": ("ADJUST_BRIGHTNESS", {"delta": "delta"}),
+            "set_volume": ("SET_VOLUME", {"value": "value"}),
+            "adjust_volume": ("ADJUST_VOLUME", {"delta": "delta"}),
+            "launch_app": ("LAUNCH_APP", {"name": "name"}),
+            "close_app": ("CLOSE_APP", {"name": "name"}),
+            "focus_app": ("FOCUS_APP", {"name": "name"}),
+            "list_apps": ("LIST_APPS", {}),
+            "list_monitors": ("LIST_INPUTS", {}),
+        }
+
+        if tool_name not in TOOL_TO_INTENT:
+            self._send_json(404, {"ok": False,
+                                  "err": f"unknown tool: {tool_name}",
+                                  "code": "ERR_NOT_FOUND"})
+            return
+
+        intent_name, param_map = TOOL_TO_INTENT[tool_name]
+
+        # GET 类工具（不需要 body）直接 dispatch
+        body = {}
+        if method == "POST":
+            cl = int(self.headers.get("Content-Length", 0))
+            if cl > 0:
+                try:
+                    body = json.loads(self.rfile.read(cl).decode("utf-8"))
+                except (ValueError, UnicodeDecodeError) as e:
+                    self._send_json(400, {"ok": False,
+                                          "err": f"invalid JSON: {e}",
+                                          "code": "ERR_BAD_REQUEST"})
+                    return
+                except Exception as e:
+                    self._send_json(400, {"ok": False,
+                                          "err": f"failed to read body: {e}",
+                                          "code": "ERR_BAD_REQUEST"})
+                    return
+            if not isinstance(body, dict):
+                self._send_json(400, {"ok": False,
+                                      "err": "body must be a JSON object",
+                                      "code": "ERR_BAD_REQUEST"})
+                return
+
+        # 构造参数
+        params = {}
+        for body_key, intent_key in param_map.items():
+            if body_key in body:
+                params[intent_key] = body[body_key]
+
+        # 调 dispatcher
+        try:
+            from executor.base import Intent, IntentType
+            from executor.dispatcher import ExecutorDispatcher
+            from executor.local import LocalExecutor
+            if not hasattr(Handler, "_tool_dispatcher"):
+                Handler._tool_dispatcher = ExecutorDispatcher(
+                    pc_agent=None, dev_stub=None, local_executor=LocalExecutor(),
+                )
+            intent = Intent(IntentType[intent_name], params)
+            result = Handler._tool_dispatcher.dispatch(intent)
+            # 200 vs 400 看 ok
+            code = 200 if result.get("ok") else 400
+            self._send_json(code, result)
+        except Exception as e:
+            import traceback
+            _log(f"[/api/v1/tools/{tool_name}] error: {e}\n{traceback.format_exc()}")
+            self._send_json(500, {"ok": False,
+                                  "err": f"internal error: {e}",
+                                  "code": "ERR_INTERNAL"})
+
     @staticmethod
     def _save_state():
         try:
@@ -358,11 +442,19 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     Handler._bootstrap_volume()
 
-    server = ThreadedHTTPServer(("127.0.0.1", LISTEN_PORT), Handler)
+    # 解析命令行参数
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--port", type=int, default=LISTEN_PORT)
+    parser.add_argument("--bind", default="127.0.0.1")
+    args = parser.parse_args()
+
+    server = ThreadedHTTPServer((args.bind, args.port), Handler)
     print("=" * 56)
     print(f"  Voice AI Proxy v3 (threaded)")
-    print(f"  http://localhost:{LISTEN_PORT}")
+    print(f"  http://{args.bind}:{args.port}")
     print(f"  /ollama/* --> {_OLLAMA_CONFIG['host']}:{_OLLAMA_CONFIG['port']}")
+    print(f"  /api/v1/tools/* (OpenClaw integration)")
     print("=" * 56)
 
     try:
