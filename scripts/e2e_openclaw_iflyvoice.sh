@@ -51,8 +51,8 @@ fi
 
 # 4. 通过 OpenClaw 发指令
 echo "[4] OpenClaw 调亮度到 75"
-# 用 openclaw agent 一次性发消息
-RESP=$(openclaw agent --message "把屏幕亮度调到 75%" --thinking low 2>&1)
+# 用 openclaw agent 一次性发消息（需指定 agent id）
+RESP=$(openclaw agent --agent main --message "把屏幕亮度调到 75%" --thinking low 2>&1)
 echo "    response: ${RESP:0:200}..."
 
 # 等几秒让链路过
