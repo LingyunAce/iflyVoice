@@ -28,14 +28,21 @@ def test_launch_app_returns_error_for_nonexistent():
 
 
 def test_close_app_kills_process_by_pid():
-    """close_app 找到 PID 后 kill"""
+    """close_app 找到 PID 后 SIGTERM, sleep 1s, SIGKILL（每 PID 2 calls，共 4 calls）"""
     from app_manager_linux import close_app
     with patch("app_manager_linux._find_pids_by_name", return_value=[1234, 5678]), \
-         patch("app_manager_linux.subprocess.run") as m_run:
+         patch("app_manager_linux.subprocess.run") as m_run, \
+         patch("app_manager_linux.time.sleep"):  # mock sleep 加速测试
         m_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
         result = close_app("firefox")
     assert result["ok"] is True
-    assert m_run.call_count == 2  # 2 个 PID
+    # 2 PIDs × 2 phases (SIGTERM + SIGKILL) = 4 calls
+    assert m_run.call_count == 4
+    # 校验所有 calls 都是 kill 命令
+    for call in m_run.call_args_list:
+        args = call[0][0]
+        assert args[0] == "kill"
+        assert args[1] in ("-TERM", "-KILL")
 
 
 def test_focus_app_uses_wmctrl_when_available():

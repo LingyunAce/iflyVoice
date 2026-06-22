@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from typing import Optional
 
 
@@ -129,7 +130,10 @@ def launch_app(name: str) -> dict:
 
 
 def close_app(name: str) -> dict:
-    """关闭应用（按名称杀进程）。返回 {ok} 或 {ok:false, err, code}"""
+    """关闭应用（按名称杀进程）。
+    策略：先 SIGTERM 让进程优雅退出，1s 后仍存的用 SIGKILL 强制杀。
+    返回 {ok} 或 {ok:false, err, code}
+    """
     pids = _find_pids_by_name(name)
     if not pids:
         # 尝试用 binary 名
@@ -145,6 +149,12 @@ def close_app(name: str) -> dict:
         try:
             subprocess.run(["kill", "-TERM", str(pid)], check=False, timeout=3)
             killed += 1
+        except Exception:
+            pass
+    time.sleep(1)
+    for pid in pids:
+        try:
+            subprocess.run(["kill", "-KILL", str(pid)], check=False, timeout=2)
         except Exception:
             pass
     return {"ok": True, "data": {"name": name, "killed": killed, "pids": pids}}
