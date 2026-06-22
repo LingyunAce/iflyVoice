@@ -1,5 +1,6 @@
-"""Executor 调度器 — 决定每个意图走 pc_agent 还是 dev_stub
-支持 PC 失败降级：连续 N 次失败后，所有 PC 意图降级到 stub（仅 dev 用）
+"""Executor 调度器 — 决定每个意图走哪个执行器。
+Phase 1 (OpenClaw 集成): 全部走 LocalExecutor；PC agent 类保留供未来使用。
+支持 PC 失败降级：连续 N 次失败后，所有 PC 意图降级到 stub（仅 dev 用，PC 重新启用时生效）。
 """
 from __future__ import annotations
 import threading

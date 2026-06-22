@@ -156,3 +156,21 @@ def test_launch_app_routes_to_local():
     disp.dispatch(Intent(IntentType.LAUNCH_APP, {"name": "firefox"}))
     local.execute_safe.assert_called_once()
     pc_agent.execute_safe.assert_not_called()
+
+
+def test_dispatch_returns_dict_not_raises():
+    """Regression: dispatch() 必须返回 dict，不能 raise。
+    之前有 bug：dispatch 把 Intent 对象传给 _route（期望 IntentType），
+    导致 TypeError: unhashable type: 'Intent'。
+    """
+    from executor.base import Intent, IntentType
+    from executor.dispatcher import ExecutorDispatcher
+    from executor.local import LocalExecutor
+    disp = ExecutorDispatcher(
+        pc_agent=None, dev_stub=None, local_executor=LocalExecutor(),
+        fail_threshold=1,
+    )
+    # 不应 raise；必须返回 dict
+    result = disp.dispatch(Intent(IntentType.SET_BRIGHTNESS, {"value": 50}))
+    assert isinstance(result, dict)
+    assert "ok" in result
