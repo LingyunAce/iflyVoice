@@ -20,13 +20,15 @@ def _which(cmd: str) -> Optional[str]:
 
 
 def _find_desktop_entry(name: str) -> Optional[str]:
-    """在 /usr/share/applications / ~/.local/share/applications 找 .desktop"""
+    """在 /usr/share/applications / ~/.local/share/applications 找 .desktop。
+    匹配顺序：精确 > 前缀 > 双向 substring（最后兜底）"""
     name_lower = name.lower().replace(" ", "-")
     dirs = [
         "/usr/share/applications",
         os.path.expanduser("~/.local/share/applications"),
         "/var/lib/snapd/desktop/applications",
     ]
+    candidates = []
     for d in dirs:
         if not os.path.isdir(d):
             continue
@@ -34,8 +36,15 @@ def _find_desktop_entry(name: str) -> Optional[str]:
             if not f.endswith(".desktop"):
                 continue
             stem = f[:-8].lower()
-            if name_lower in stem or stem in name_lower:
-                return os.path.join(d, f)
+            full = os.path.join(d, f)
+            if stem == name_lower:
+                return full  # 精确匹配，立即返回
+            if stem.startswith(name_lower):
+                candidates.insert(0, (full, stem))  # 前缀匹配优先
+            elif name_lower in stem or stem in name_lower:
+                candidates.append((full, stem))  # 兜底
+    if candidates:
+        return candidates[0][0]
     return None
 
 
@@ -76,7 +85,10 @@ def _xdg_open_fallback(name: str) -> bool:
 
 
 def _find_pids_by_name(name: str) -> list[int]:
-    """pgrep 找进程 PID 列表"""
+    """用 pgrep -f 找名字匹配的进程 PID 列表。
+    -f 匹配完整命令行，所以 "firefox" 也会匹配 "firefox-bin"、
+    "firefox-wrapper.sh" 等。返回去重 PID 列表；找不到返回空 list。
+    """
     pids = []
     try:
         out = subprocess.run(
@@ -132,7 +144,8 @@ def launch_app(name: str) -> dict:
 def close_app(name: str) -> dict:
     """关闭应用（按名称杀进程）。
     策略：先 SIGTERM 让进程优雅退出，1s 后仍存的用 SIGKILL 强制杀。
-    返回 {ok} 或 {ok:false, err, code}
+    为避免 PID 复用风险，SIGKILL 前用 kill -0 探活。
+    返回 {ok, data: {term_sent, kill_sent, pids}} 或 {ok:false, err, code}
     """
     pids = _find_pids_by_name(name)
     if not pids:
@@ -144,40 +157,53 @@ def close_app(name: str) -> dict:
     if not pids:
         return {"ok": False, "err": f"{name} 未在运行", "code": "ERR_APP_NOT_RUNNING"}
 
-    killed = 0
+    term_sent = 0
     for pid in pids:
         try:
             subprocess.run(["kill", "-TERM", str(pid)], check=False, timeout=3)
-            killed += 1
+            term_sent += 1
         except Exception:
             pass
     time.sleep(1)
+
+    # PID 复用防护：只对还活着的发 SIGKILL
+    kill_sent = 0
     for pid in pids:
         try:
-            subprocess.run(["kill", "-KILL", str(pid)], check=False, timeout=2)
+            probe = subprocess.run(["kill", "-0", str(pid)], check=False, timeout=2)
+            if probe.returncode == 0:  # 还活着
+                subprocess.run(["kill", "-KILL", str(pid)], check=False, timeout=2)
+                kill_sent += 1
         except Exception:
             pass
-    return {"ok": True, "data": {"name": name, "killed": killed, "pids": pids}}
+    return {"ok": True, "data": {"name": name, "term_sent": term_sent,
+                                  "kill_sent": kill_sent, "pids": pids}}
 
 
 def focus_app(name: str) -> dict:
-    """切换/聚焦已运行应用的窗口。"""
+    """切换/聚焦已运行应用的窗口。返回 ok+via 或 ok:false+code"""
     wmctrl = _which("wmctrl")
     if wmctrl:
         try:
-            # wmctrl -a <WIN> 激活匹配窗口
-            subprocess.run([wmctrl, "-a", name], check=False, timeout=3)
-            return {"ok": True, "data": {"name": name, "via": "wmctrl"}}
+            r1 = subprocess.run([wmctrl, "-a", name], check=False,
+                                capture_output=True, text=True, timeout=3)
+            if r1.returncode == 0:
+                return {"ok": True, "data": {"name": name, "via": "wmctrl"}}
+            # 窗口未找到
+            return {"ok": False, "err": f"wmctrl 未找到匹配 {name!r} 的窗口 (rc={r1.returncode})",
+                    "code": "ERR_WINDOW_NOT_FOUND"}
         except Exception as e:
             return {"ok": False, "err": f"wmctrl 失败: {e}", "code": "ERR_FOCUS_FAILED"}
 
-    # xdotool 兜底
     xdotool = _which("xdotool")
     if xdotool:
         try:
-            subprocess.run([xdotool, "search", "--name", name, "windowactivate"],
-                         check=False, timeout=3)
-            return {"ok": True, "data": {"name": name, "via": "xdotool"}}
+            r2 = subprocess.run([xdotool, "search", "--name", name, "windowactivate"],
+                                check=False, capture_output=True, text=True, timeout=3)
+            if r2.returncode == 0 and r2.stdout.strip():
+                return {"ok": True, "data": {"name": name, "via": "xdotool"}}
+            return {"ok": False, "err": f"xdotool 未找到匹配 {name!r} 的窗口",
+                    "code": "ERR_WINDOW_NOT_FOUND"}
         except Exception as e:
             return {"ok": False, "err": f"xdotool 失败: {e}", "code": "ERR_FOCUS_FAILED"}
 
@@ -185,7 +211,19 @@ def focus_app(name: str) -> dict:
 
 
 def list_apps() -> dict:
-    """列出当前运行的 GUI 进程。返回 {ok, data: [{name, pid}]}"""
+    """列出当前运行的"应用类"进程。返回 {ok, data: [{name, pid}]}
+    启发式过滤：跳过 kernel threads、init、已知系统守护进程
+    """
+    SYSTEM_NAMES = {
+        "systemd", "init", "kthreadd", "ksoftirqd", "kworker", "migration",
+        "rcu_", "watchdog", "irq", "scsi_", "crypt", "kblockd", "kdevtmpfs",
+        "kthrotld", "oom_reaper", "writeback", "kintegrityd", "kswapd0",
+        "dbus-daemon", "NetworkManager", "pulseaudio", "Xorg", "wayland-session",
+        "systemd-journald", "systemd-udevd", "systemd-logind", "sshd", "cron",
+        "polkitd", "snapd", "chronyd", "rsyslogd", "cupsd",
+    }
+    KERNEL_PREFIXES = ("kworker/", "kthread", "irq/", "scsi_", "ksoftirqd",
+                       "migration/", "rcu_", "kblockd", "kdevtmpfs")
     try:
         out = subprocess.run(
             ["ps", "-eo", "pid,comm", "--no-headers"],
@@ -202,9 +240,14 @@ def list_apps() -> dict:
                 pid = int(pid_str)
             except ValueError:
                 continue
-            # 过滤明显系统进程
-            if name in ("systemd", "kthreadd", "kworker", "migration",
-                       "rcu_", "watchdog", "init", "ksoftirqd"):
+            # 过滤：pid < 1000（系统进程通常 pid 小）
+            if pid < 1000:
+                continue
+            # 过滤：kernel threads
+            if any(name.startswith(p) for p in KERNEL_PREFIXES):
+                continue
+            # 过滤：已知系统守护进程
+            if name in SYSTEM_NAMES:
                 continue
             if name in seen:
                 continue
