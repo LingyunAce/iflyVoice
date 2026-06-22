@@ -151,9 +151,11 @@ def test_conftest_pc_agent_fixture(pc_agent):
 
 
 def test_conftest_dispatcher_fixture(dispatcher):
-    """dispatcher fixture 返回 ExecutorDispatcher"""
+    """dispatcher fixture 返回 ExecutorDispatcher（Phase 1: PC 路由到 local）"""
     from executor.dispatcher import ExecutorDispatcher
+    from executor.local import LocalExecutor
     assert isinstance(dispatcher, ExecutorDispatcher)
-    # 默认健康
+    # Phase 1: SET_BRIGHTNESS 走 local，不走 pc_agent
     from executor.base import IntentType
-    assert dispatcher._route(IntentType.SET_BRIGHTNESS) is dispatcher.pc_agent
+    assert dispatcher._route(IntentType.SET_BRIGHTNESS) is dispatcher.local_executor
+    assert isinstance(dispatcher.local_executor, LocalExecutor)

@@ -11,21 +11,27 @@ from executor.local import LocalExecutor
 from executor.pc_agent import PCAgentExecutor
 
 
-# 走 PC agent 的意图（PC 侧功能）
-_PC_INTENTS = {
+# 走本地（板子端）执行所有 intent — OpenClaw 集成 Phase 1
+# PC 端能力（亮度/音量/应用）也由板子本地实现，不走 Win PC
+_LOCAL_INTENTS = {
+    # 本机（legacy）
+    IntentType.SET_LOCAL_BACKLIGHT, IntentType.ADJUST_LOCAL_BACKLIGHT,
+    # 显示器（Plan 1 走 PC；Phase 1 改走板子 sysfs/xrandr）
     IntentType.SET_BRIGHTNESS, IntentType.ADJUST_BRIGHTNESS,
     IntentType.SET_CONTRAST, IntentType.ADJUST_CONTRAST,
     IntentType.SET_COLOR_TEMP,
     IntentType.SET_INPUT, IntentType.LIST_INPUTS,
+    # 音量
     IntentType.SET_VOLUME, IntentType.ADJUST_VOLUME,
-    IntentType.LAUNCH_APP, IntentType.CLOSE_APP, IntentType.FOCUS_APP, IntentType.LIST_APPS,
+    # 应用
+    IntentType.LAUNCH_APP, IntentType.CLOSE_APP,
+    IntentType.FOCUS_APP, IntentType.LIST_APPS,
+    # B 站（本期不支持，由 LocalExecutor 返回 ERR_UNSUPPORTED）
     IntentType.BILIBILI_SEARCH,
 }
 
-# 走本地（stub，本期 Plan 2 替换为真实实现）
-_LOCAL_INTENTS = {
-    IntentType.SET_LOCAL_BACKLIGHT, IntentType.ADJUST_LOCAL_BACKLIGHT,
-}
+# PC agent 路径暂留空 — 未来要连 Win PC 时再启用
+_PC_INTENTS: set = set()
 
 
 class ExecutorDispatcher:
@@ -36,11 +42,12 @@ class ExecutorDispatcher:
         result = disp.dispatch(intent)
     """
 
-    def __init__(self, pc_agent: PCAgentExecutor, dev_stub: DevStubExecutor,
-                 local_executor: LocalExecutor = None,
+    def __init__(self, pc_agent: Optional[PCAgentExecutor] = None,
+                 dev_stub: Optional[DevStubExecutor] = None,
+                 local_executor: Optional[LocalExecutor] = None,
                  fail_threshold: int = 3, health_check_interval: float = 30.0):
         self.pc_agent = pc_agent
-        self.dev_stub = dev_stub
+        self.dev_stub = dev_stub or DevStubExecutor()
         self.local_executor = local_executor or LocalExecutor()
         self.fail_threshold = fail_threshold
         self.health_check_interval = health_check_interval
@@ -50,19 +57,24 @@ class ExecutorDispatcher:
 
     def dispatch(self, intent: Intent) -> dict:
         """派发意图到对应执行器"""
-        exe = self._route(intent)
+        exe = self._route(intent.type)
         return exe.execute_safe(intent)
 
     def _route(self, intent_type: IntentType) -> Executor:
-        """根据意图类型 + PC 健康状态选择执行器"""
+        """根据意图类型 + PC 健康状态选择执行器。
+        Phase 1: 所有 intent 走 local（PC 路径留 _PC_INTENTS 集合，未来启用）
+        """
         if intent_type in _LOCAL_INTENTS:
             return self.local_executor
 
-        # PC 意图：检查 PC 是否健康
-        if self._is_pc_healthy():
-            return self.pc_agent
-        else:
-            return self.dev_stub  # 降级
+        # PC 意图（未来启用）
+        if self.pc_agent is not None and intent_type in _PC_INTENTS:
+            if self._is_pc_healthy():
+                return self.pc_agent
+            return self.dev_stub
+
+        # fallback：未分类的 intent 也走 local
+        return self.local_executor
 
     def _is_pc_healthy(self) -> bool:
         """PC 健康判定：连续失败 < 阈值 才算健康；否则按间隔心跳探测一次
