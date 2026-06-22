@@ -49,7 +49,7 @@ iflyVoice 在 RK3576 上的 Plan 1/2/3 已经把核心管线搬到板子：
 ### 1.4 范围与非范围
 
 **范围内**：
-- iflyVoice HTTP 服务新增 8 个 tool 端点
+- iflyVoice HTTP 服务新增 9 个 tool 端点 + `/health`（共 10 个）
 - LocalExecutor 扩展（亮度/音量/应用三类 intent）
 - SKILL.md + 软链到 `~/.openclaw/workspace/skills/iflyvoice/`
 - ARM 板子 e2e 验证
@@ -151,7 +151,7 @@ iflyVoice 在 RK3576 上的 Plan 1/2/3 已经把核心管线搬到板子：
 
 ### 3.2 ExecutorDispatcher 路由调整
 
-**改动**：`executor/dispatcher.py` 的 `_PC_INTENTS` 集合。
+**改动**：`executor/dispatcher.py` 把 `_PC_INTENTS` 中的 intent 全部移到 `_LOCAL_INTENTS`（PC agent 路径在路由层不再被选中）。
 
 | Intent | 旧路由 | 新路由 | 备注 |
 |--------|--------|--------|------|
@@ -309,8 +309,8 @@ systemctl --user restart openclaw-gateway
 
 | 文件 | 覆盖 |
 |------|------|
-| `tests/test_local_executor.py` | LocalExecutor 新增的 4 类 intent |
-| `tests/test_server_tools.py` | 8 个 HTTP 端点的请求/响应 |
+| `tests/test_local_executor.py` | LocalExecutor 新增的 4 类 intent（display / audio / app / 不支持） |
+| `tests/test_server_tools.py` | 9 个 tool 端点 + `/health` 的请求/响应 |
 
 ### 6.2 集成测试（ARM 板子）
 
@@ -326,8 +326,11 @@ curl -fsS http://127.0.0.1:18766/health
 # 3. 调亮度
 curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/set_brightness \
   -H "Content-Type: application/json" -d '{"value":50}'
-# 4. 验证 sysfs
-grep -q "^100$" /sys/class/backlight/*/brightness  # 50% 对应 raw
+# 4. 验证 sysfs：读取 max_brightness 后检查 raw 值是否对应 50%
+MAX=$(cat /sys/class/backlight/*/max_brightness)
+EXPECTED=$((MAX / 2))
+RAW=$(cat /sys/class/backlight/*/brightness)
+[ "$RAW" -eq "$EXPECTED" ] || { echo "亮度 raw=$RAW, expected=$EXPECTED"; exit 1; }
 # 5. 调音量
 curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/set_volume \
   -H "Content-Type: application/json" -d '{"value":30}'
