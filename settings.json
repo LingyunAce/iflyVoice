@@ -4,7 +4,7 @@
   "audio_url": "http://192.168.1.32:9997",
   "ollama_url": "http://192.168.1.32:11434",
   "ollama_model": "qwen3-vl:2b",
-  "wake_word": "小爱同学",
+  "wake_word": "小助手",
   "logo_path": "",
   "winpc_agent_url": "http://192.168.1.50:18770",
   "npu_asr_enabled": true,

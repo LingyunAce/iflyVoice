@@ -35,6 +35,12 @@ iflyVoice 在 127.0.0.1:18766 提供 HTTP API，控制 RK3576 板子的本地硬
 
 ## 调用方式
 
+**优先使用 MCP 工具**（`iflyvoice__*`），无需 exec+curl。当 MCP 不可用时再用以下 curl 方式。
+
+### MCP 工具（推荐）
+直接调用 `iflyvoice__set_brightness`、`iflyvoice__set_input` 等工具，参数为 JSON 对象。
+
+### curl 方式（备用）
 使用 `exec` 工具调 curl。**必须保留完整引号**：
 
 ```bash
@@ -139,10 +145,11 @@ curl -fsS http://127.0.0.1:18766/api/v1/tools/list_monitors
 
 ## 注意事项
 
+- **重要：优先使用 MCP 工具**。所有 `iflyvoice__*` 开头的工具直接调用，不要绕道 exec+curl。
 - **重要：DDC/CI 显示器控制始终可用**。`list_monitors` 返回两个字段：
   `xrandr_outputs`（可能为空，取决于桌面会话）和 `ddc_sources`（DDC/CI 真实探测）。
   即使 `xrandr_outputs` 为空，DDC/CI 路径依然有效。不要因为 xrandr 返回空就认为无显示器。
-- **set_input 直接执行**：不需要先检查"是否支持"——直接调 `set_input`，根据返回结果判断。
+- **set_input 直接执行**：不需要先检查"是否支持"——直接调 `iflyvoice__set_input`，根据返回结果判断。
 - 用户说"亮一点"而当前是 90 → 调到 100，不要超过
 - 用户说"打开 XX"但找不到 XX → 提示当前可用的应用
 - 每次硬件操作后**用 1-2 句自然语言回复用户**，不要说"已发送 curl 请求"
