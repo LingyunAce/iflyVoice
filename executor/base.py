@@ -38,6 +38,10 @@ class IntentType(str, Enum):
     # 查询 VCP 码表（WebDDCUtil）
     LIST_VCP_CODES = "list_vcp_codes"
 
+    # 语音助手控制
+    VOICE_START = "voice_start"
+    VOICE_STOP = "voice_stop"
+
     # 无意图（普通对话）
     NONE = "none"
 

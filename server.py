@@ -651,6 +651,8 @@ class Handler(BaseHTTPRequestHandler):
             "list_inputs": ("LIST_INPUTS", {}),
             "set_input": ("SET_INPUT", {"code": "code"}),
             "list_vcp_codes": ("LIST_VCP_CODES", {"code": "code", "keyword": "keyword"}),
+            "voice_start": ("VOICE_START", {}),
+            "voice_stop": ("VOICE_STOP", {}),
         }
 
         if tool_name not in TOOL_TO_INTENT:

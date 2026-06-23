@@ -2,6 +2,9 @@
 所有 PC 端能力（Plan 1 时期走 PC agent）也路由到这里，本地优先。
 """
 from __future__ import annotations
+import os
+import signal
+import time
 from executor.base import Executor, Intent, IntentType
 
 
@@ -40,6 +43,10 @@ class LocalExecutor(Executor):
             return self._local_backlight(intent)
         if t == IntentType.LIST_VCP_CODES:
             return self._list_vcp_codes(intent)
+        if t == IntentType.VOICE_START:
+            return self._voice_control("start")
+        if t == IntentType.VOICE_STOP:
+            return self._voice_control("stop")
         if t == IntentType.BILIBILI_SEARCH:
             return {"ok": False, "err": "B 站搜索本期不支持", "code": "ERR_UNSUPPORTED"}
         return {"ok": False, "err": f"local_executor does not support {t.value}",
@@ -275,6 +282,65 @@ class LocalExecutor(Executor):
                 "entries": entries,
             },
         }
+
+    # ── Voice Assistant Control ─────────────────────────
+    @staticmethod
+    def _voice_control(action: str) -> dict:
+        """Start/stop voice_assistant.py daemon."""
+        import subprocess
+        pid_file = "/tmp/voice_assistant.pid"
+        va_script = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "voice_assistant.py",
+        )
+
+        if action == "start":
+            # Check if already running
+            try:
+                with open(pid_file) as f:
+                    old_pid = int(f.read().strip())
+                os.kill(old_pid, 0)  # check if alive
+                return {"ok": True, "data": {"status": "already_running", "pid": old_pid}}
+            except (OSError, FileNotFoundError, ValueError):
+                pass
+
+            try:
+                # Start in background via shell script (avoids fork timeout)
+                start_script = os.path.join(
+                    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                    "scripts", "start-voice-assistant.sh",
+                )
+                subprocess.Popen(
+                    ["bash", start_script, "start"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                time.sleep(1.5)  # wait for daemon to write pid file
+                try:
+                    with open(pid_file) as f:
+                        new_pid = int(f.read().strip())
+                    os.kill(new_pid, 0)
+                    return {"ok": True, "data": {"status": "started", "pid": new_pid}}
+                except (FileNotFoundError, ProcessLookupError, ValueError):
+                    return {"ok": False, "err": "Started but process not found — check logs",
+                            "code": "ERR_VOICE"}
+            except Exception as e:
+                return {"ok": False, "err": f"Failed to start: {e}", "code": "ERR_VOICE"}
+
+        elif action == "stop":
+            try:
+                with open(pid_file) as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, signal.SIGTERM)
+                os.unlink(pid_file)
+                return {"ok": True, "data": {"status": "stopped", "pid": pid}}
+            except FileNotFoundError:
+                return {"ok": True, "data": {"status": "not_running"}}
+            except ProcessLookupError:
+                return {"ok": True, "data": {"status": "already_stopped"}}
+            except Exception as e:
+                return {"ok": False, "err": str(e), "code": "ERR_VOICE"}
+
+        return {"ok": False, "err": "invalid action", "code": "ERR_VOICE"}
 
     # ── Local backlight (legacy) ────────────────────────
     @staticmethod

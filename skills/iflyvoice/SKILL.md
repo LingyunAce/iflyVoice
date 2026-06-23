@@ -30,6 +30,8 @@ iflyVoice 在 127.0.0.1:18766 提供 HTTP API，控制 RK3576 板子的本地硬
 | 显示器 | `list_monitors` | 列出已连接的输出 + DDC/CI 输入源 |
 | 输入源 | `set_input` | 切换显示器输入源（DDC/CI） |
 | 语音识别 | `stt` | 语音转文字（SenseVoiceSmall，中文优先） |
+| 语音助手 | `voice_start` | 启动实时语音助手（唤醒词"小爱同学"） |
+| 语音助手 | `voice_stop` | 停止语音助手 |
 
 ## 调用方式
 
