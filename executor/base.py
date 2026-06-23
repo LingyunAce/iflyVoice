@@ -35,6 +35,9 @@ class IntentType(str, Enum):
     ADJUST_LOCAL_BACKLIGHT = "adjust_local_backlight"
     SET_LOCAL_BACKLIGHT = "set_local_backlight"
 
+    # 查询 VCP 码表（WebDDCUtil）
+    LIST_VCP_CODES = "list_vcp_codes"
+
     # 无意图（普通对话）
     NONE = "none"
 

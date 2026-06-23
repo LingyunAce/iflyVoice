@@ -336,6 +336,7 @@ class Handler(BaseHTTPRequestHandler):
             "list_monitors": ("LIST_INPUTS", {}),
             "list_inputs": ("LIST_INPUTS", {}),
             "set_input": ("SET_INPUT", {"code": "code"}),
+            "list_vcp_codes": ("LIST_VCP_CODES", {"code": "code", "keyword": "keyword"}),
         }
 
         if tool_name not in TOOL_TO_INTENT:

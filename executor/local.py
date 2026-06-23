@@ -38,6 +38,8 @@ class LocalExecutor(Executor):
             return self._app(intent)
         if t in _LOCAL_BACKLIGHT_INTENTS:
             return self._local_backlight(intent)
+        if t == IntentType.LIST_VCP_CODES:
+            return self._list_vcp_codes(intent)
         if t == IntentType.BILIBILI_SEARCH:
             return {"ok": False, "err": "B 站搜索本期不支持", "code": "ERR_UNSUPPORTED"}
         return {"ok": False, "err": f"local_executor does not support {t.value}",
@@ -219,6 +221,60 @@ class LocalExecutor(Executor):
             return aml.list_apps()
         return {"ok": False, "err": f"unhandled app: {t.value}",
                 "code": "ERR_UNSUPPORTED"}
+
+    # ── VCP Code Reference ──────────────────────────────
+    # WebDDCUtil config (centralized VCP knowledge base)
+    _VCP_API_BASE = "http://192.168.1.213:5002"
+    _VCP_API_KEY = "ddc_MyF_YWHGFhDj_h8XkenfauEtgudWGF76ge6AbYBLTbo"
+
+    @staticmethod
+    def _list_vcp_codes(intent: Intent) -> dict:
+        """Query WebDDCUtil for VCP code definitions.
+        Optional param 'code' to filter by VCP code (hex string like '10').
+        Optional param 'keyword' to search name/description.
+        """
+        import urllib.request as _ur
+        import json as _json
+
+        code_filter = intent.params.get("code", "").upper().lstrip("0X")
+        keyword = intent.params.get("keyword", "").lower()
+
+        try:
+            url = f"{LocalExecutor._VCP_API_BASE}/api/v1/owners/1/entries"
+            req = _ur.Request(url, headers={"X-API-Key": LocalExecutor._VCP_API_KEY})
+            with _ur.urlopen(req, timeout=5) as resp:
+                data = _json.loads(resp.read())
+        except Exception as e:
+            return {"ok": False, "err": f"WebDDCUtil 查询失败: {e}",
+                    "code": "ERR_VCP_REF"}
+
+        entries = []
+        for e in data.get("entries", []):
+            # Filter by VCP code if specified
+            if code_filter and e["code_hex"].upper() != code_filter:
+                continue
+            # Filter by keyword if specified
+            if keyword:
+                name_lower = e["name"].lower()
+                desc_lower = e["description"].lower()
+                if keyword not in name_lower and keyword not in desc_lower:
+                    continue
+            entries.append({
+                "vcp_code": f"0x{e['code_hex']}",
+                "name": e["name"],
+                "description": e["description"],
+                "type": e["vcp_type"],
+                "category": e["category_name"],
+            })
+
+        return {
+            "ok": True,
+            "data": {
+                "owner": f"{data['owner_name']} {data['owner_version']}",
+                "total_matched": len(entries),
+                "entries": entries,
+            },
+        }
 
     # ── Local backlight (legacy) ────────────────────────
     @staticmethod
