@@ -52,7 +52,18 @@ fi
 # 4. 通过 OpenClaw 发指令
 echo "[4] OpenClaw 调亮度到 75"
 # 用 openclaw agent 一次性发消息（需指定 agent id）
-RESP=$(openclaw agent --agent main --message "把屏幕亮度调到 75%" --thinking low 2>&1)
+# 加 timeout 防止 LLM 响应超时导致脚本永久卡住
+OPENCLAW_TIMEOUT=120
+RESP=$(timeout $OPENCLAW_TIMEOUT openclaw agent --agent main --message "把屏幕亮度调到 75%" --thinking low 2>&1) || {
+    RC=$?
+    if [ $RC -eq 124 ]; then
+        warn "OpenClaw LLM 响应超时（${OPENCLAW_TIMEOUT}s），跳过"
+        RESP="[超时]"
+    else
+        warn "openclaw agent 返回非零 ($RC)，继续验证"
+        RESP="[错误: $RC]"
+    fi
+}
 echo "    response: ${RESP:0:200}..."
 
 # 等几秒让链路过
