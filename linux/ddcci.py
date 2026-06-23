@@ -106,26 +106,56 @@ def set_contrast(value: int) -> bool:
 
 
 def list_input_sources() -> list[dict]:
-    """List available input sources via DDC/CI VCP 0x60.
+    """List available input sources via DDC/CI capabilities (VCP 0x60).
     Returns list of {code, name} dicts.
     """
-    rc, out = _run_ddc("getvcp", "0x60")
+    rc, out = _run_ddc("capabilities", timeout=5)
     if rc != 0:
         return []
-    # Parse values from "Values:" section
+
     sources = []
+    in_feature_60 = False
     in_values = False
+
     for line in out.splitlines():
-        if "Values:" in line:
-            in_values = True
+        # Detect "Feature: 60 (Input Source)" section
+        if not in_feature_60:
+            if re.match(r"\s*Feature:\s*60\b", line):
+                in_feature_60 = True
             continue
-        if in_values and ":" in line:
-            m = re.match(r"\s*(\w+):\s+(.+)", line)
-            if m:
-                sources.append({"code": m.group(1), "name": m.group(2).strip()})
-        elif in_values and line.strip() == "":
+        # Once in feature 60, look for "Values:" block
+        if not in_values:
+            if "Values:" in line:
+                in_values = True
+            elif re.match(r"\s*Feature:\s*\w+", line):
+                break  # next feature before values = no values list
+            continue
+        # Inside Values block: stop on empty line or next Feature
+        if line.strip() == "" or re.match(r"\s*Feature:\s*\w+", line):
             break
+        # Parse "    0f: DisplayPort-1" — only hex code keys
+        m = re.match(r"\s*([0-9a-fA-F]{2}):\s+(.+)", line)
+        if m:
+            sources.append({"code": m.group(1), "name": m.group(2).strip()})
+
     return sources
+
+
+def get_current_input() -> Optional[str]:
+    """Get current input source name via DDC/CI VCP 0x60."""
+    rc, out = _run_ddc("getvcp", "0x60")
+    if rc != 0:
+        return None
+    m = re.search(r"current value\s*=\s*([^,]+)", out)
+    if not m:
+        return None
+    val_str = m.group(1).strip()
+    # Also extract the hex code
+    sl_match = re.search(r"sl=0x(\w+)", out)
+    if sl_match:
+        code = sl_match.group(1)
+        return {"name": val_str, "code": code}
+    return {"name": val_str, "code": ""}
 
 
 def set_input_source(code: str) -> bool:
