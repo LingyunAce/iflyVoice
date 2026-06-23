@@ -29,6 +29,7 @@ iflyVoice 在 127.0.0.1:18766 提供 HTTP API，控制 RK3576 板子的本地硬
 | 应用 | `list_apps` | 列出当前运行的 GUI 进程 |
 | 显示器 | `list_monitors` | 列出已连接的输出 + DDC/CI 输入源 |
 | 输入源 | `set_input` | 切换显示器输入源（DDC/CI） |
+| 语音识别 | `stt` | 语音转文字（SenseVoiceSmall，中文优先） |
 
 ## 调用方式
 
@@ -87,6 +88,11 @@ curl -fsS -X POST http://127.0.0.1:18766/api/v1/tools/set_input \
 
 # 列出已运行应用
 curl -fsS http://127.0.0.1:18766/api/v1/tools/list_apps
+
+# 语音转文字（发送音频文件，SenseVoiceSmall 识别）
+curl -fsS -X POST http://127.0.0.1:18766/sensevoice/transcribe \
+  -F 'file=@/tmp/recording.webm'
+# 返回: {"success": true, "text": "识别出的中文文字"}
 
 # 列出已连接显示器 + DDC/CI 输入源
 curl -fsS http://127.0.0.1:18766/api/v1/tools/list_monitors

@@ -62,6 +62,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("GET")
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
+        elif self.path.startswith("/sensevoice/transcribe"):
+            self._handle_stt()
         else:
             self._serve_static()
 
@@ -76,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_native("POST")
         elif self.path.startswith("/v1/audio/speech"):
             self._handle_tts()
+        elif self.path.startswith("/sensevoice/transcribe"):
+            self._handle_stt()
         else:
             self.send_error(404)
 
@@ -273,6 +277,108 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(502, {"success": False, "error": f"TTS {e.code}: {err_body[:200]}"})
         except Exception as e:
             _log(f"[TTS] Error: {e}")
+            self._send_json(500, {"success": False, "error": str(e)})
+
+    def _handle_stt(self):
+        """Proxy speech-to-text to SenseVoiceSmall at 192.168.1.32:9997/v1/audio/transcriptions"""
+        import urllib.request, urllib.error
+        cfg = self.SENSEVOICE_CONFIG
+        target_url = f"{cfg['base_url']}/v1/audio/transcriptions"
+
+        # Parse multipart/form-data to extract audio file
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            return self._send_json(400, {"success": False, "error": "Expected multipart/form-data"})
+
+        # Extract boundary
+        boundary = None
+        for part in content_type.split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part[len("boundary="):].strip('"')
+                break
+        if not boundary:
+            return self._send_json(400, {"success": False, "error": "No boundary in Content-Type"})
+
+        cl = int(self.headers.get("Content-Length", 0))
+        if cl <= 0:
+            return self._send_json(400, {"success": False, "error": "No request body"})
+
+        body = self.rfile.read(cl)
+        boundary_bytes = boundary.encode("utf-8")
+        delimiter = b"--" + boundary_bytes
+        end_delimiter = b"--" + boundary_bytes + b"--"
+
+        # Find file part
+        parts = body.split(delimiter)
+        audio_data = None
+        filename = "audio.webm"
+        for part in parts:
+            if b"Content-Disposition" not in part:
+                continue
+            if b'name="file"' not in part:
+                continue
+            # Split headers from body
+            header_end = part.find(b"\r\n\r\n")
+            if header_end == -1:
+                continue
+            audio_data = part[header_end + 4:]
+            # Remove trailing \r\n and end delimiter
+            if audio_data.endswith(b"\r\n"):
+                audio_data = audio_data[:-2]
+            # Extract filename
+            import re
+            fn_match = re.search(rb'filename="([^"]*)"', part[:header_end])
+            if fn_match:
+                filename = fn_match.group(1).decode("utf-8", errors="replace")
+            break
+
+        if not audio_data:
+            return self._send_json(400, {"success": False, "error": "No audio file found in request"})
+
+        try:
+            # Build simple multipart/form-data body for xinference
+            import uuid
+            boundary_out = "----XinfStt" + uuid.uuid4().hex[:16]
+            crlf = b"\r\n"
+            out_parts = []
+            out_parts.append(b"--" + boundary_out.encode())
+            out_parts.append(b'Content-Disposition: form-data; name="model"')
+            out_parts.append(b"")
+            out_parts.append(b"sensevoice")
+            out_parts.append(b"--" + boundary_out.encode())
+            out_parts.append(b'Content-Disposition: form-data; name="language"')
+            out_parts.append(b"")
+            out_parts.append(b"zh")
+            out_parts.append(b"--" + boundary_out.encode())
+            out_parts.append(
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode()
+            )
+            out_parts.append(b"Content-Type: application/octet-stream")
+            out_parts.append(b"")
+            out_parts.append(audio_data)
+            out_parts.append(b"--" + boundary_out.encode() + b"--")
+            out_body = crlf.join(out_parts)
+
+            req = urllib.request.Request(
+                target_url,
+                data=out_body,
+                headers={
+                    "Content-Type": f"multipart/form-data; boundary={boundary_out}",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                resp_body = resp.read().decode("utf-8")
+                result = json.loads(resp_body)
+                _log(f"[STT] success: {resp_body[:100]}")
+                self._send_json(200, {"success": True, "text": result.get("text", "")})
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            _log(f"[STT] HTTP {e.code}: {err_body[:200]}")
+            self._send_json(502, {"success": False, "error": f"STT {e.code}: {err_body[:200]}"})
+        except Exception as e:
+            _log(f"[STT] Error: {e}")
             self._send_json(500, {"success": False, "error": str(e)})
 
     def _handle_native(self, method):
