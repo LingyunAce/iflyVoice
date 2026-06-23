@@ -98,6 +98,7 @@ class VoiceAssistant:
         self.state = State.IDLE
         self.running = False
         self.interrupted = False
+        self._pending_wake_checks = 0  # counter for in-flight STT requests
 
         # Audio buffer (deque of int16 numpy arrays)
         self._audio_buffer: collections.deque[np.ndarray] = collections.deque()
@@ -164,6 +165,15 @@ class VoiceAssistant:
             while self.running:
                 try:
                     chunk = self._chunk_queue.get(timeout=0.1)
+                    # Discard audio during processing/speaking to prevent feedback
+                    if self.state in (State.PROCESSING, State.SPEAKING):
+                        # Drain excess chunks to prevent overflow
+                        while not self._chunk_queue.empty():
+                            try:
+                                self._chunk_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        continue
                     self._process_chunk(chunk)
                 except queue.Empty:
                     continue
@@ -200,6 +210,7 @@ class VoiceAssistant:
                 self._command_buffer.clear()
                 self._buffer_start_time = now
                 self._last_speech_time = now
+                self._last_wake_check = 0  # reset for new cycle
                 self._audio_buffer.append(chunk.copy())
             return
 
@@ -211,17 +222,24 @@ class VoiceAssistant:
             elapsed = now - self._buffer_start_time
             silence_dur = now - self._last_speech_time
 
-            # Timeout?
-            if elapsed > self.cfg.max_wake_listen or silence_dur > 3.0:
+            # Timeout? Pending STT blocks silence timeout
+            if elapsed > self.cfg.max_wake_listen:
+                _log("Wake listen max time → IDLE")
+                self.state = State.IDLE
+                return
+            if silence_dur > 10.0 and self._pending_wake_checks == 0:
                 _log("Wake listen timeout → IDLE")
                 self.state = State.IDLE
                 return
 
             # Check wake word periodically (non-blocking: run in thread)
-            if elapsed > 0.8 and elapsed - getattr(self, "_last_wake_check", 0) > self.cfg.wake_check_interval:
+            if elapsed >= 0.5 and elapsed - self._last_wake_check >= self.cfg.wake_check_interval:
                 self._last_wake_check = now
                 import copy
                 buf_snapshot = copy.deepcopy(self._audio_buffer)
+                dur = sum(len(c) for c in buf_snapshot) / self.cfg.sample_rate
+                _log(f"Wake check dispatch: buf={dur:.1f}s, elapsed={elapsed:.1f}s")
+                self._pending_wake_checks += 1
                 threading.Thread(
                     target=self._check_wake_word_async,
                     args=(buf_snapshot,),
@@ -256,6 +274,7 @@ class VoiceAssistant:
         """Run in background thread — transcribe snapshot, update state if matched."""
         try:
             text = self._transcribe_buffer(buf_snapshot)
+            self._pending_wake_checks -= 1
             if not text:
                 return
 
@@ -285,6 +304,7 @@ class VoiceAssistant:
                         self._last_speech_time = time.time()
                         return
         except Exception as e:
+            self._pending_wake_checks -= 1
             _log(f"Wake check error: {e}")
 
     # ── Command Processing ─────────────────────────────────
@@ -333,34 +353,23 @@ class VoiceAssistant:
                 return ""
 
             # Save as WAV
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                wav_path = f.name
-            self._save_wav(audio, wav_path)
+            wav_bytes = io.BytesIO()
+            self._save_wav_bytes(audio, wav_bytes)
+            wav_data = wav_bytes.getvalue()
 
-            # Convert to webm for better STT accuracy
-            webm_path = wav_path.replace(".wav", ".webm")
-            subprocess.run(
-                ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self.cfg.sample_rate),
-                 "-ac", "1", "-i", wav_path, "-c:a", "libopus", webm_path],
-                capture_output=True, timeout=5,
-            )
-
-            # Send to STT
+            # Send WAV directly (SenseVoiceSmall accepts WAV)
             import urllib.request
             import uuid
 
             _log(f"STT: sending {dur:.1f}s audio to SenseVoiceSmall...")
             boundary = "----Stt" + uuid.uuid4().hex[:16]
             crlf = b"\r\n"
-            with open(webm_path, "rb") as f:
-                audio_data = f.read()
-
             parts = [
                 b"--" + boundary.encode(),
-                b'Content-Disposition: form-data; name="file"; filename="audio.webm"',
-                b"Content-Type: application/octet-stream",
+                b'Content-Disposition: form-data; name="file"; filename="audio.wav"',
+                b"Content-Type: audio/wav",
                 b"",
-                audio_data,
+                wav_data,
                 b"--" + boundary.encode() + b"--",
             ]
             body = crlf.join(parts)
@@ -371,25 +380,20 @@ class VoiceAssistant:
                 headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
                 method="POST",
             )
+            t0 = time.time()
             with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read().decode())
                 text = result.get("text", "").strip()
-
-            # Cleanup
-            for p in [wav_path, webm_path]:
-                try:
-                    os.unlink(p)
-                except OSError:
-                    pass
+            _log(f"STT response: '{text}' ({time.time()-t0:.1f}s)")
 
             return text
         except Exception as e:
             _log(f"STT error: {e}")
             return ""
 
-    def _save_wav(self, audio: np.ndarray, path: str):
+    def _save_wav_bytes(self, audio: np.ndarray, buf: io.BytesIO):
         import wave
-        with wave.open(path, "w") as w:
+        with wave.open(buf, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(2)
             w.setframerate(self.cfg.sample_rate)

@@ -133,10 +133,16 @@ curl -fsS http://127.0.0.1:18766/api/v1/tools/list_monitors
 | 打开浏览器 | `launch_app` `{"name":"firefox"}` |
 | 关闭 firefox | `close_app` `{"name":"firefox"}` |
 | 切到终端 | `focus_app` `{"name":"terminal"}` |
+| 切换到 DP | `set_input` `{"code":"0f"}` |
+| 切换到 HDMI | `set_input` `{"code":"11"}` |
 | 现在跑着什么应用 | `list_apps` |
 
 ## 注意事项
 
+- **重要：DDC/CI 显示器控制始终可用**。`list_monitors` 返回两个字段：
+  `xrandr_outputs`（可能为空，取决于桌面会话）和 `ddc_sources`（DDC/CI 真实探测）。
+  即使 `xrandr_outputs` 为空，DDC/CI 路径依然有效。不要因为 xrandr 返回空就认为无显示器。
+- **set_input 直接执行**：不需要先检查"是否支持"——直接调 `set_input`，根据返回结果判断。
 - 用户说"亮一点"而当前是 90 → 调到 100，不要超过
 - 用户说"打开 XX"但找不到 XX → 提示当前可用的应用
 - 每次硬件操作后**用 1-2 句自然语言回复用户**，不要说"已发送 curl 请求"
