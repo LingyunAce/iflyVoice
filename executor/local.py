@@ -52,30 +52,33 @@ class LocalExecutor(Executor):
         if t == IntentType.ADJUST_BRIGHTNESS:
             return LocalExecutor._adjust_brightness(intent.params.get("delta", 0))
         if t == IntentType.SET_CONTRAST:
-            v = max(0, min(100, int(intent.params.get("value", 50))))
-            return {"ok": True, "data": {"value": v, "note": "xrandr software contrast"}}
+            return LocalExecutor._set_contrast(intent.params.get("value", 50))
         if t == IntentType.ADJUST_CONTRAST:
-            # MVP: 用 50 作为"当前"基线（没有真实读硬件）
-            cur = 50
-            new_val = max(0, min(100, cur + int(intent.params.get("delta", 0))))
-            return {"ok": True, "data": {"value": new_val, "note": "xrandr software contrast"}}
+            return LocalExecutor._adjust_contrast(intent.params.get("delta", 0))
         if t == IntentType.SET_COLOR_TEMP:
             v = max(0, min(100, int(intent.params.get("value", 50))))
             return {"ok": True, "data": {"value": v, "note": "xrandr gamma color temp"}}
         if t == IntentType.SET_INPUT:
-            return {"ok": False, "err": "板子无 DDC-CI 切换输入源",
-                    "code": "ERR_UNSUPPORTED"}
+            return LocalExecutor._set_input(intent.params.get("code", ""))
         if t == IntentType.LIST_INPUTS:
-            from linux.display import list_connected_outputs
-            outs = list_connected_outputs()
-            return {"ok": True, "data": outs}
+            return LocalExecutor._list_inputs()
         return {"ok": False, "err": f"unhandled display: {t.value}",
                 "code": "ERR_UNSUPPORTED"}
 
     @staticmethod
     def _set_brightness(value: int) -> dict:
-        from linux.backlight import set_backlight_value
         v = max(0, min(100, int(value)))
+        # ── DDC/CI first ──
+        try:
+            from linux.ddcci import set_brightness as _ddc_set_brightness, is_ddc_available
+            if is_ddc_available():
+                ok = _ddc_set_brightness(v)
+                if ok:
+                    return {"ok": True, "data": {"value": v, "via": "ddcci"}}
+        except Exception:
+            pass
+        # ── fallback: sysfs backlight / xrandr ──
+        from linux.backlight import set_backlight_value
         ok = set_backlight_value(v)
         if not ok:
             return {"ok": False, "err": "backlight unavailable", "code": "ERR_LOCAL_BACKLIGHT"}
@@ -83,15 +86,91 @@ class LocalExecutor(Executor):
 
     @staticmethod
     def _adjust_brightness(delta: int) -> dict:
+        d = int(delta)
+        # ── DDC/CI first ──
+        try:
+            from linux.ddcci import get_brightness as _ddc_get_brightness, set_brightness as _ddc_set_brightness, is_ddc_available
+            if is_ddc_available():
+                cur = _ddc_get_brightness()
+                if cur >= 0:
+                    new_val = max(0, min(100, cur + d))
+                    ok = _ddc_set_brightness(new_val)
+                    if ok:
+                        return {"ok": True, "data": {"value": new_val, "previous": cur, "via": "ddcci"}}
+        except Exception:
+            pass
+        # ── fallback ──
         from linux.backlight import get_backlight_value, set_backlight_value
         cur = get_backlight_value()
         if cur < 0:
             return {"ok": False, "err": "cannot read backlight", "code": "ERR_LOCAL_BACKLIGHT"}
-        new_val = max(0, min(100, cur + int(delta)))
+        new_val = max(0, min(100, cur + d))
         ok = set_backlight_value(new_val)
         if not ok:
             return {"ok": False, "err": "backlight write failed", "code": "ERR_LOCAL_BACKLIGHT"}
         return {"ok": True, "data": {"value": new_val}}
+
+    @staticmethod
+    def _set_contrast(value: int) -> dict:
+        v = max(0, min(100, int(value)))
+        try:
+            from linux.ddcci import set_contrast as _ddc_set_contrast, is_ddc_available
+            if is_ddc_available():
+                ok = _ddc_set_contrast(v)
+                if ok:
+                    return {"ok": True, "data": {"value": v, "via": "ddcci"}}
+        except Exception:
+            pass
+        return {"ok": False, "err": "DDC/CI contrast unavailable",
+                "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _adjust_contrast(delta: int) -> dict:
+        d = int(delta)
+        try:
+            from linux.ddcci import get_contrast as _ddc_get_contrast, set_contrast as _ddc_set_contrast, is_ddc_available
+            if is_ddc_available():
+                cur = _ddc_get_contrast()
+                if cur >= 0:
+                    new_val = max(0, min(100, cur + d))
+                    ok = _ddc_set_contrast(new_val)
+                    if ok:
+                        return {"ok": True, "data": {"value": new_val,
+                                                       "previous": cur, "via": "ddcci"}}
+        except Exception:
+            pass
+        return {"ok": False, "err": "DDC/CI contrast unavailable",
+                "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _set_input(code: str) -> dict:
+        if not code:
+            return {"ok": False, "err": "需要 code 参数", "code": "ERR_LOCAL_DISPLAY"}
+        try:
+            from linux.ddcci import set_input_source, is_ddc_available
+            if is_ddc_available():
+                ok = set_input_source(code)
+                if ok:
+                    return {"ok": True, "data": {"code": code}}
+        except Exception:
+            pass
+        return {"ok": False, "err": "DDC/CI 输入源切换不可用",
+                "code": "ERR_UNSUPPORTED"}
+
+    @staticmethod
+    def _list_inputs() -> dict:
+        # DDC/CI sources + xrandr outputs
+        try:
+            from linux.ddcci import list_input_sources, is_ddc_available
+            if is_ddc_available():
+                sources = list_input_sources()
+            else:
+                sources = []
+        except Exception:
+            sources = []
+        from linux.display import list_connected_outputs
+        outs = list_connected_outputs()
+        return {"ok": True, "data": {"xrandr_outputs": outs, "ddc_sources": sources}}
 
     # ── Audio ────────────────────────────────────────────
     @staticmethod

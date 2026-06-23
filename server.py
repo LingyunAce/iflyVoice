@@ -325,6 +325,8 @@ class Handler(BaseHTTPRequestHandler):
         TOOL_TO_INTENT = {
             "set_brightness": ("SET_BRIGHTNESS", {"value": "value"}),
             "adjust_brightness": ("ADJUST_BRIGHTNESS", {"delta": "delta"}),
+            "set_contrast": ("SET_CONTRAST", {"value": "value"}),
+            "adjust_contrast": ("ADJUST_CONTRAST", {"delta": "delta"}),
             "set_volume": ("SET_VOLUME", {"value": "value"}),
             "adjust_volume": ("ADJUST_VOLUME", {"delta": "delta"}),
             "launch_app": ("LAUNCH_APP", {"name": "name"}),
@@ -332,6 +334,8 @@ class Handler(BaseHTTPRequestHandler):
             "focus_app": ("FOCUS_APP", {"name": "name"}),
             "list_apps": ("LIST_APPS", {}),
             "list_monitors": ("LIST_INPUTS", {}),
+            "list_inputs": ("LIST_INPUTS", {}),
+            "set_input": ("SET_INPUT", {"code": "code"}),
         }
 
         if tool_name not in TOOL_TO_INTENT:
