@@ -217,10 +217,16 @@ class VoiceAssistant:
                 self.state = State.IDLE
                 return
 
-            # Check wake word periodically
+            # Check wake word periodically (non-blocking: run in thread)
             if elapsed > 0.8 and elapsed - getattr(self, "_last_wake_check", 0) > self.cfg.wake_check_interval:
                 self._last_wake_check = now
-                self._check_wake_word()
+                import copy
+                buf_snapshot = copy.deepcopy(self._audio_buffer)
+                threading.Thread(
+                    target=self._check_wake_word_async,
+                    args=(buf_snapshot,),
+                    daemon=True,
+                ).start()
 
             return
 
@@ -246,14 +252,18 @@ class VoiceAssistant:
             return
 
     # ── Wake Word Detection ───────────────────────────────
-    def _check_wake_word(self):
+    def _check_wake_word_async(self, buf_snapshot):
+        """Run in background thread — transcribe snapshot, update state if matched."""
         try:
-            text = self._transcribe_buffer(self._audio_buffer)
+            text = self._transcribe_buffer(buf_snapshot)
             if not text:
                 return
 
             _log(f"Wake check: '{text}'")
-            # Match: text starts with or contains wake word (fuzzy)
+            # Only act if still in WAKE_LISTEN state
+            if self.state != State.WAKE_LISTEN:
+                return
+
             ww = self.cfg.wake_word
             if text.startswith(ww) or ww in text:
                 _log(f"*** WAKE WORD DETECTED: '{text}' ***")
@@ -261,7 +271,6 @@ class VoiceAssistant:
                 self._command_buffer.clear()
                 self._buffer_start_time = time.time()
                 self._last_speech_time = time.time()
-                # Copy any remaining audio from wake buffer
                 self._command_buffer.extend(self._audio_buffer)
             elif len(text) >= 2:
                 # Fuzzy: check 2-char overlap
@@ -317,8 +326,10 @@ class VoiceAssistant:
             # Concatenate all chunks
             audio = np.concatenate(list(buf)).astype(np.int16)
             buf.clear()
+            dur = len(audio) / self.cfg.sample_rate
 
-            if len(audio) < self.cfg.sample_rate * 0.3:  # < 0.3s
+            if dur < 0.3:  # < 0.3s
+                _log(f"STT: too short ({dur:.1f}s), skipping")
                 return ""
 
             # Save as WAV
@@ -338,6 +349,7 @@ class VoiceAssistant:
             import urllib.request
             import uuid
 
+            _log(f"STT: sending {dur:.1f}s audio to SenseVoiceSmall...")
             boundary = "----Stt" + uuid.uuid4().hex[:16]
             crlf = b"\r\n"
             with open(webm_path, "rb") as f:
