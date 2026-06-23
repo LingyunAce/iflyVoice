@@ -64,6 +64,10 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_tts()
         elif self.path.startswith("/sensevoice/transcribe"):
             self._handle_stt()
+        elif self.path.startswith("/v1/chat/completions"):
+            self._handle_chat_completions()
+        elif self.path.startswith("/v1/models"):
+            self._handle_models_list()
         else:
             self._serve_static()
 
@@ -80,6 +84,8 @@ class Handler(BaseHTTPRequestHandler):
             self._handle_tts()
         elif self.path.startswith("/sensevoice/transcribe"):
             self._handle_stt()
+        elif self.path.startswith("/v1/chat/completions"):
+            self._handle_chat_completions()
         else:
             self.send_error(404)
 
@@ -380,6 +386,208 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:
             _log(f"[STT] Error: {e}")
             self._send_json(500, {"success": False, "error": str(e)})
+
+    def _handle_chat_completions(self):
+        """Wrapper: expose xinference SenseVoiceSmall STT as OpenAI chat/completions.
+        Tricks OpenClaw into treating SenseVoiceSmall as an LLM provider.
+        Audio in messages is extracted, transcribed via STT, and returned as chat text.
+        """
+        import urllib.request, urllib.error, uuid, base64, time
+
+        cl = int(self.headers.get("Content-Length", 0))
+        if cl <= 0:
+            return self._send_json(400, {"error": "No request body"})
+        try:
+            body = json.loads(self.rfile.read(cl).decode("utf-8"))
+        except Exception as e:
+            return self._send_json(400, {"error": f"Invalid JSON: {e}"})
+
+        messages = body.get("messages", [])
+        model = body.get("model", "sensevoice")
+        request_id = body.get("request_id", "") or f"chatcmpl-{uuid.uuid4().hex[:24]}"
+
+        # ── Extract audio from messages ──
+        audio_data = None
+        audio_format = "webm"
+
+        for msg in messages:
+            content = msg.get("content", "")
+            # Case 1: content is a list (multimodal) — look for audio blocks
+            if isinstance(content, list):
+                for block in content:
+                    if not isinstance(block, dict):
+                        continue
+                    btype = block.get("type", "")
+                    # OpenAI / DeepSeek multimodal audio format
+                    if "audio" in btype or "input_audio" in btype:
+                        aud = block.get("input_audio", block)
+                        audio_format = aud.get("format", "wav")
+                        b64 = aud.get("data", "") or aud.get("b64_json", "")
+                        if b64:
+                            try:
+                                audio_data = base64.b64decode(b64)
+                            except Exception:
+                                pass
+                    # Anthropic-style: base64 source
+                    if btype == "base64" and block.get("media_type", "").startswith("audio/"):
+                        b64 = block.get("data", "")
+                        if b64:
+                            try:
+                                audio_data = base64.b64decode(b64)
+                            except Exception:
+                                pass
+                if audio_data:
+                    break
+            # Case 2: content is a string with audio hint
+            elif isinstance(content, str) and msg.get("audio"):
+                aud = msg["audio"]
+                b64 = aud.get("data", "") or aud.get("b64", "")
+                if b64:
+                    try:
+                        audio_data = base64.b64decode(b64)
+                    except Exception:
+                        pass
+                if audio_data:
+                    break
+
+        # Case 3: top-level audio field (extension)
+        if not audio_data and "audio" in body:
+            aud = body["audio"]
+            if isinstance(aud, dict):
+                b64 = aud.get("data", "") or aud.get("b64", "")
+                audio_format = aud.get("format", "webm")
+                if b64:
+                    try:
+                        audio_data = base64.b64decode(b64)
+                    except Exception:
+                        pass
+            elif isinstance(aud, str):
+                try:
+                    audio_data = base64.b64decode(aud)
+                except Exception:
+                    pass
+
+        # ── No audio → forward to DeepSeek as transparent proxy ──
+        if not audio_data:
+            _log("[ChatSTT] No audio, forwarding to DeepSeek")
+            try:
+                ds_url = "https://api.deepseek.com/v1/chat/completions"
+                ds_api_key = "sk-7726de86fe4e4e0982ee51ec1bda3151 "
+                ds_req = urllib.request.Request(
+                    ds_url,
+                    data=json.dumps(body).encode(),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {ds_api_key.strip()}",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(ds_req, timeout=120) as ds_resp:
+                    ds_body = ds_resp.read()
+                    self.send_response(ds_resp.status)
+                    self.send_header("Content-Type", "application/json")
+                    self._cors_headers()
+                    self.end_headers()
+                    self.wfile.write(ds_body)
+                    return
+            except Exception as e:
+                _log(f"[ChatSTT] DeepSeek fallback error: {e}")
+                return self._send_json(502, {
+                    "error": f"Proxy error: {e}",
+                })
+
+        _log(f"[ChatSTT] Audio extracted: {len(audio_data)} bytes, format={audio_format}")
+
+        # ── Call xinference STT ──
+        cfg = self.SENSEVOICE_CONFIG
+        target_url = f"{cfg['base_url']}/v1/audio/transcriptions"
+
+        # Determine file extension from format
+        ext_map = {"webm": "webm", "wav": "wav", "mp3": "mp3",
+                   "ogg": "ogg", "m4a": "m4a", "flac": "flac"}
+        ext = ext_map.get(audio_format, "webm")
+        filename = f"audio.{ext}"
+
+        # Build multipart body
+        boundary_stt = "----ChatStt" + uuid.uuid4().hex[:16]
+        crlf = b"\r\n"
+        parts = [
+            b"--" + boundary_stt.encode(),
+            b'Content-Disposition: form-data; name="model"',
+            b"",
+            b"sensevoice",
+            b"--" + boundary_stt.encode(),
+            b'Content-Disposition: form-data; name="language"',
+            b"",
+            b"zh",
+            b"--" + boundary_stt.encode(),
+            f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode(),
+            b"Content-Type: application/octet-stream",
+            b"",
+            audio_data,
+            b"--" + boundary_stt.encode() + b"--",
+        ]
+        stt_body = crlf.join(parts)
+
+        try:
+            req = urllib.request.Request(
+                target_url,
+                data=stt_body,
+                headers={"Content-Type": f"multipart/form-data; boundary={boundary_stt}"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                stt_result = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode("utf-8", errors="replace")
+            _log(f"[ChatSTT] STT HTTP {e.code}: {err_body[:200]}")
+            return self._send_json(502, {
+                "error": f"STT upstream error: {err_body[:200]}",
+            })
+        except Exception as e:
+            _log(f"[ChatSTT] STT error: {e}")
+            return self._send_json(500, {"error": str(e)})
+
+        text = stt_result.get("text", "")
+        _log(f"[ChatSTT] Transcribed: {text[:100]}")
+
+        # ── Return OpenAI chat completion format ──
+        now = int(time.time())
+        response = {
+            "id": request_id,
+            "object": "chat.completion",
+            "created": now,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": text,
+                },
+                "finish_reason": "stop",
+            }],
+            "usage": {
+                "prompt_tokens": len(audio_data) // 4,
+                "completion_tokens": len(text),
+                "total_tokens": len(audio_data) // 4 + len(text),
+            },
+        }
+        self._send_json(200, response)
+
+    def _handle_models_list(self):
+        """Return models list in OpenAI format for provider auto-discovery."""
+        self._send_json(200, {
+            "object": "list",
+            "data": [
+                {
+                    "id": "sensevoice",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "iflyvoice",
+                    "model_type": "audio",
+                }
+            ],
+        })
 
     def _handle_native(self, method):
         """本机屏幕软调（Plan 1 stub，Plan 2 替换为 linux/backlight.py）"""
