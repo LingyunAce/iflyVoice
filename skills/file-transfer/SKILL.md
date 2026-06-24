@@ -7,76 +7,74 @@ description: "RK3576 板子 ↔ Windows 本机文件传输。USB RNDIS 优先（
 
 即插即用文件传输。全程 exec 命令行，无需交互。
 
-## 连接配置
+## 连接参数
 
-| 方式 | IP | 密码 | Host Key |
-|------|-----|------|----------|
-| USB RNDIS（优先） | 169.254.184.100 | `temppwd` | `ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28` |
-| 以太网（备用） | 192.168.1.207 | 同上 | 同上 |
+用户 `cat`，密码 `temppwd`，目标目录 `D:\AI\project\iflyVoice\downloads\`。
+Host Key: `ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28`
 
-用户 `cat`，目标目录 `D:\AI\project\iflyVoice\downloads\`。
+IP 不固定——通过自动检测获取。
 
 ## 标准操作流程
 
-### 步骤 0：准备连接参数
+### 步骤 1：检测连接（动态 IP）
 
-```bash
-BOARD_IP=169.254.184.100
-BOARD_PW=temppwd
-HK="ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28"
+执行 PowerShell 检测脚本：
+
+```powershell
+powershell -File "D:\AI\project\iflyVoice\skills\file-transfer\detect_board.ps1"
 ```
 
-### 步骤 1：检测连接
+脚本自动完成：
+- 试以太网固定 IP (192.168.1.207)
+- 找 RNDIS 网卡 → 取 Windows 侧 IP → 推导板子 IP（DHCP 或扫描 .2-.10）
+- 兜底扫常见静态 IP
+
+结果写入 `board_connection.json`，包含 `method`、`ip`、`user`、`password`。
+
+### 步骤 2：读取 IP
 
 ```bash
-# 先试 USB
-ping -n 1 169.254.184.100 >nul 2>&1 && echo "USB_OK" && set BOARD_IP=169.254.184.100 || (
-  # USB 不通，试以太网
-  ping -n 1 192.168.1.207 >nul 2>&1 && echo "ETH_OK" && set BOARD_IP=192.168.1.207 || (
-    echo "NOT_CONNECTED" && exit 1
-  )
-)
+# 从 JSON 提取 IP
+set BOARD_IP=<从 board_connection.json 读取>
+set BOARD_PW=temppwd
+set HK="ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28"
 ```
 
-### 步骤 2：列出板子文件
+### 步骤 3：列出文件
 
 ```bash
-plink -batch -pw %BOARD_PW% -hostkey "%HK%" cat@%BOARD_IP% "ls -la ~/.openclaw/canvas/ 2>/dev/null; echo '---workspace---'; ls -p ~/.openclaw/workspace/ 2>/dev/null | grep -v '/$'"
+plink -batch -pw %BOARD_PW% -hostkey "%HK%" cat@%BOARD_IP% "ls -la ~/.openclaw/canvas/"
 ```
 
-### 步骤 3：拷贝文件
+### 步骤 4：拷贝文件
 
 ```bash
 pscp -batch -pw %BOARD_PW% -hostkey "%HK%" cat@%BOARD_IP%:.openclaw/canvas/<文件名> "D:\AI\project\iflyVoice\downloads\"
 ```
 
-### USB IP 修复（如 USB 不通）
+### USB IP 修复（仅 USB 不通时）
 
 ```bash
-# 通过以太网修复 USB IP
-plink -batch -pw %BOARD_PW% -hostkey "%HK%" cat@192.168.1.207 "sudo ip addr add 169.254.184.100/16 dev usb0 2>/dev/null; ip -br addr show usb0"
+# 通过以太网给 usb0 配 IP
+plink -batch -pw temppwd -hostkey "%HK%" cat@192.168.1.207 "sudo dhclient usb0 2>/dev/null || sudo ip addr add 169.254.184.100/16 dev usb0"
 ```
 
 ## 板子常用路径
 
 | 路径 | 内容 |
 |------|------|
-| `~/.openclaw/canvas/` | OpenClaw 生成的文档/PPT/HTML |
-| `~/.openclaw/workspace/` | OpenClaw 项目文件 |
+| `~/.openclaw/canvas/` | 生成的文档/PPT/HTML |
+| `~/.openclaw/workspace/` | 项目文件 |
 | `~/iflyVoice/` | iflyVoice 代码 |
 
-## 完整操作示例
+## 完整示例
 
-用户说："把板子上的 PPT 文件拷到本机"
+用户说："把板子上的 PPT 拷到本机"
 
-执行：
 ```bash
 # 1. 检测
-ping -n 1 169.254.184.100 >nul 2>&1 && echo "USB: OK" || echo "USB: FAIL"
+powershell -File "D:\AI\project\iflyVoice\skills\file-transfer\detect_board.ps1"
 
-# 2. 列表
-plink -batch -pw temppwd -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100 "ls -la ~/.openclaw/canvas/"
-
-# 3. 拷贝
+# 2. 根据检测结果执行（假设 USB 检测到 169.254.184.100）
 pscp -batch -pw temppwd -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100:.openclaw/canvas/ai-display-ppt.pptx "D:\AI\project\iflyVoice\downloads\"
 ```
