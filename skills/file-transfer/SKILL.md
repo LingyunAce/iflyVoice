@@ -19,48 +19,49 @@ plink -batch -pw <password> cat@<ip> "cat ~/.openclaw/board_creds.json"
 
 ## 前置条件
 
-板子和 Windows 本机至少通过以下方式之一连接：
-- **SSH**：板子 IP 通常为 192.168.1.207，用户名 cat（密码见 `~/.openclaw/board_creds.json`）
-- **USB 直连**：板子作为 USB gadget（RNDIS/ECM），IP 通常为 192.168.137.x 或 169.254.x.x
+板子和 Windows 本机至少通过以下方式之一连接（两路可同时用）：
+- **以太网 SSH**：板子 IP `192.168.1.207`
+- **USB Type-C RNDIS**：板子 IP `169.254.184.100`（开机自启，插线即用）
+- 用户名 `cat`，密码见 `~/.openclaw/board_creds.json`
 
 ## 自动检测连接方式
 
-使用 `exec` 工具执行以下检测脚本：
+使用 `exec` 工具执行以下检测脚本（Windows PowerShell）：
 
-```bash
-# 1. 先试 SSH
-ping -n 1 192.168.1.207 >nul 2>&1 && echo "SSH_AVAILABLE" || echo "SSH_NOT_FOUND"
+```powershell
+# 1. USB RNDIS（优先——插线即用）
+if (Test-Connection 169.254.184.100 -Count 1 -Quiet) { echo "USB_RNDIS:169.254.184.100" }
 
-# 2. 再扫描 USB gadget IP
-for ip in 192.168.137.2 192.168.137.1 169.254.1.2 10.0.0.2; do
-  ping -n 1 -w 500 $ip >nul 2>&1 && echo "USB_GADGET:$ip" && break
-done
+# 2. 以太网 SSH
+if (Test-Connection 192.168.1.207 -Count 1 -Quiet) { echo "ETH_SSH:192.168.1.207" }
 
-# 3. Windows 检测 USB 设备
-pnputil /enum-devices 2>nul | findstr /i "rk3576\|rockchip\|gadget\|rndis" && echo "USB_DEVICE_FOUND"
+# 3. 扫描其他可能 IP
+foreach ($ip in @("192.168.137.2","169.254.1.2","10.0.0.2")) {
+  if (Test-Connection $ip -Count 1 -Quiet) { echo "OTHER:$ip"; break }
+}
 ```
 
 ## 列出板子文件
 
 ```bash
-# SSH 方式
-plink -batch -pw $BOARD_PASSWORD cat@192.168.1.207 "ls -la ~/.openclaw/canvas/; echo '---'; ls -la ~/.openclaw/workspace/ | grep -v '^d\|\.git'"
+# USB RNDIS（优先）
+plink -batch -pw $BOARD_PASSWORD cat@169.254.184.100 "ls -la ~/.openclaw/canvas/; ls -la ~/.openclaw/workspace/"
 
-# USB gadget 方式
-plink -batch -pw $BOARD_PASSWORD cat@<usb_ip> "ls -la ~/.openclaw/canvas/"
+# 以太网（备用）
+plink -batch -pw $BOARD_PASSWORD cat@192.168.1.207 "ls -la ~/.openclaw/canvas/"
 ```
 
 ## 拷贝文件到本机
 
 ```bash
-# SSH 方式 — 单个文件
-pscp -batch -pw $BOARD_PASSWORD cat@192.168.1.207:.openclaw/canvas/<文件名> "<Windows本地路径>"
+# USB RNDIS（优先）— 拷贝到 Windows
+pscp -batch -pw $BOARD_PASSWORD cat@169.254.184.100:.openclaw/canvas/<文件名> "D:\AI\project\iflyVoice\downloads\"
 
-# SSH 方式 — 整个目录
-pscp -batch -pw $BOARD_PASSWORD cat@192.168.1.207:.openclaw/canvas/* "<Windows本地路径>\"
+# 以太网（备用）
+pscp -batch -pw $BOARD_PASSWORD cat@192.168.1.207:.openclaw/canvas/<文件名> "D:\AI\project\iflyVoice\downloads\"
 
-# USB gadget 方式 — IP 换成检测到的 USB IP
-pscp -batch -pw $BOARD_PASSWORD cat@<usb_ip>:.openclaw/canvas/<文件名> "<Windows本地路径>"
+# 含有 host key 的完整命令（避免首次确认）
+plink -batch -pw $BOARD_PASSWORD -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100 "ls ~/.openclaw/canvas/"
 ```
 
 ## 常用板子路径
