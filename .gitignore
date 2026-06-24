@@ -18,3 +18,4 @@ reshade_inject/
 # IDE
 .vscode/
 .idea/
+.board_creds
