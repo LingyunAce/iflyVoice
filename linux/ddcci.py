@@ -186,3 +186,81 @@ def set_power_mode(on: bool) -> bool:
     val = "1" if on else "4"
     rc, _ = _run_ddc("setvcp", "0xD6", val)
     return rc == 0
+
+
+# ── Color ─────────────────────────────────────────────────────
+
+def get_color_preset() -> dict | None:
+    """Get current color preset via DDC/CI VCP 0x14."""
+    rc, out = _run_ddc("getvcp", "0x14")
+    if rc != 0:
+        return None
+    # Parse current value
+    m = re.search(r"current value\s*=\s*(\d+)", out)
+    if not m:
+        return None
+    code = int(m.group(1))
+    # Parse name from values list
+    name = f"preset_{code}"
+    for line in out.splitlines():
+        val_match = re.match(rf"\s*0?x?{code:02x}:\s+(.+)", line, re.IGNORECASE)
+        if val_match:
+            name = val_match.group(1).strip()
+            break
+    return {"code": code, "name": name}
+
+
+def set_color_preset(code: int) -> bool:
+    """Set color preset via DDC/CI VCP 0x14 (e.g. 5=6500K, 11=User 1)."""
+    rc, _ = _run_ddc("setvcp", "0x14", str(code))
+    return rc == 0
+
+
+def list_color_presets() -> list[dict]:
+    """List available color presets from DDC/CI capabilities."""
+    rc, out = _run_ddc("capabilities", timeout=5)
+    if rc != 0:
+        return []
+    presets = []
+    in_feature_14 = False
+    in_values = False
+    for line in out.splitlines():
+        if not in_feature_14:
+            if re.match(r"\s*Feature:\s*14\b", line):
+                in_feature_14 = True
+            continue
+        if not in_values:
+            if "Values:" in line:
+                in_values = True
+            elif re.match(r"\s*Feature:\s*\w+", line):
+                break
+            continue
+        m = re.match(r"\s*([0-9a-fA-F]+):\s+(.+)", line)
+        if m:
+            presets.append({"code": int(m.group(1), 16), "name": m.group(2).strip()})
+        else:
+            if line.strip() == "" or re.match(r"\s*Feature:\s*\w+", line):
+                break
+    return presets
+
+
+def set_rgb_gain(red: int, green: int, blue: int) -> dict:
+    """Set RGB gain (VCP 0x16/0x18/0x1A). Values 0-100. Returns per-channel results."""
+    results = {}
+    for vcp, name, val in [("0x16", "red", red), ("0x18", "green", green), ("0x1A", "blue", blue)]:
+        v = max(0, min(100, int(val)))
+        rc, _ = _run_ddc("setvcp", vcp, str(v))
+        results[name] = rc == 0
+    return results
+
+
+def get_rgb_gain() -> dict:
+    """Get current RGB gain values (VCP 0x16/0x18/0x1A)."""
+    gains = {}
+    for vcp, name in [("0x16", "red"), ("0x18", "green"), ("0x1A", "blue")]:
+        rc, out = _run_ddc("getvcp", vcp)
+        if rc == 0:
+            m = re.search(r"current value\s*=\s*(\d+)", out)
+            if m:
+                gains[name] = int(m.group(1))
+    return gains

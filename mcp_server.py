@@ -71,6 +71,30 @@ TOOLS = [
         },
     },
     {
+        "name": "set_color_temp",
+        "description": "设置显示器色温预设 (DDC/CI VCP 0x14)。可用预设: 6500 K, 7500 K, 9300 K, User 1",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "preset": {"type": "string", "description": "色温预设名称, 如 '6500 K'"},
+                "code": {"type": "integer", "description": "色温预设代码, 如 5=6500K"},
+            },
+        },
+    },
+    {
+        "name": "set_rgb_gain",
+        "description": "设置显示器 RGB 增益 (DDC/CI VCP 0x16/18/1A), 各通道 0-100",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "red": {"type": "integer", "description": "红色增益 0-100"},
+                "green": {"type": "integer", "description": "绿色增益 0-100"},
+                "blue": {"type": "integer", "description": "蓝色增益 0-100"},
+            },
+            "required": ["red", "green", "blue"],
+        },
+    },
+    {
         "name": "set_input",
         "description": "切换显示器输入源(DDC/CI双向可用)。代码: 0f=DP-1, 10=DP-2, 11=HDMI-1",
         "inputSchema": {

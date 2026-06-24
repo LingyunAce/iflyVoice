@@ -15,6 +15,7 @@ class IntentType(str, Enum):
     SET_CONTRAST = "set_contrast"
     ADJUST_CONTRAST = "adjust_contrast"
     SET_COLOR_TEMP = "set_color_temp"
+    SET_RGB_GAIN = "set_rgb_gain"
     SET_INPUT = "set_input"
     LIST_INPUTS = "list_inputs"
 

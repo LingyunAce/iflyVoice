@@ -12,7 +12,8 @@ from executor.base import Executor, Intent, IntentType
 _DISPLAY_INTENTS = frozenset({
     IntentType.SET_BRIGHTNESS, IntentType.ADJUST_BRIGHTNESS,
     IntentType.SET_CONTRAST, IntentType.ADJUST_CONTRAST,
-    IntentType.SET_COLOR_TEMP, IntentType.SET_INPUT, IntentType.LIST_INPUTS,
+    IntentType.SET_COLOR_TEMP, IntentType.SET_RGB_GAIN,
+    IntentType.SET_INPUT, IntentType.LIST_INPUTS,
 })
 _AUDIO_INTENTS = frozenset({
     IntentType.SET_VOLUME, IntentType.ADJUST_VOLUME,
@@ -65,8 +66,9 @@ class LocalExecutor(Executor):
         if t == IntentType.ADJUST_CONTRAST:
             return LocalExecutor._adjust_contrast(intent.params.get("delta", 0))
         if t == IntentType.SET_COLOR_TEMP:
-            v = max(0, min(100, int(intent.params.get("value", 50))))
-            return {"ok": True, "data": {"value": v, "note": "xrandr gamma color temp"}}
+            return LocalExecutor._set_color_temp(intent)
+        if t == IntentType.SET_RGB_GAIN:
+            return LocalExecutor._set_rgb_gain(intent)
         if t == IntentType.SET_INPUT:
             return LocalExecutor._set_input(intent.params.get("code", ""))
         if t == IntentType.LIST_INPUTS:
@@ -165,6 +167,57 @@ class LocalExecutor(Executor):
             pass
         return {"ok": False, "err": "DDC/CI 输入源切换不可用",
                 "code": "ERR_UNSUPPORTED"}
+
+    @staticmethod
+    def _set_color_temp(intent: Intent) -> dict:
+        """Set color temperature preset via DDC/CI VCP 0x14."""
+        preset = intent.params.get("preset")  # e.g. "6500 K", "User 1"
+        code = intent.params.get("code")       # e.g. 5, 11
+        try:
+            from linux.ddcci import set_color_preset, list_color_presets, is_ddc_available
+            if is_ddc_available():
+                if code is not None:
+                    ok = set_color_preset(int(code))
+                elif preset:
+                    # Look up code from name
+                    presets = {p["name"]: p["code"] for p in list_color_presets()}
+                    matched_code = presets.get(preset)
+                    if matched_code is None:
+                        # Fuzzy match
+                        for name, c in presets.items():
+                            if preset.lower() in name.lower():
+                                matched_code = c
+                                break
+                    if matched_code is None:
+                        return {"ok": False, "err": f"Unknown preset: {preset}",
+                                "code": "ERR_LOCAL_DISPLAY"}
+                    ok = set_color_preset(matched_code)
+                else:
+                    return {"ok": False, "err": "Need 'preset' or 'code' param",
+                            "code": "ERR_BAD_REQUEST"}
+                if ok:
+                    return {"ok": True, "data": {"via": "ddcci"}}
+        except Exception:
+            pass
+        return {"ok": False, "err": "DDC/CI color preset unavailable",
+                "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _set_rgb_gain(intent: Intent) -> dict:
+        """Set RGB gain via DDC/CI VCP 0x16/0x18/0x1A."""
+        r = intent.params.get("red", 50)
+        g = intent.params.get("green", 50)
+        b = intent.params.get("blue", 50)
+        try:
+            from linux.ddcci import set_rgb_gain, is_ddc_available
+            if is_ddc_available():
+                results = set_rgb_gain(int(r), int(g), int(b))
+                if any(results.values()):
+                    return {"ok": True, "data": {"results": results, "via": "ddcci"}}
+        except Exception:
+            pass
+        return {"ok": False, "err": "DDC/CI RGB gain unavailable",
+                "code": "ERR_LOCAL_DISPLAY"}
 
     @staticmethod
     def _list_inputs() -> dict:

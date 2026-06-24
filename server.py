@@ -651,6 +651,8 @@ class Handler(BaseHTTPRequestHandler):
             "list_inputs": ("LIST_INPUTS", {}),
             "set_input": ("SET_INPUT", {"code": "code"}),
             "list_vcp_codes": ("LIST_VCP_CODES", {"code": "code", "keyword": "keyword"}),
+            "set_color_temp": ("SET_COLOR_TEMP", {"preset": "preset", "code": "code"}),
+            "set_rgb_gain": ("SET_RGB_GAIN", {"red": "red", "green": "green", "blue": "blue"}),
             "voice_start": ("VOICE_START", {}),
             "voice_stop": ("VOICE_STOP", {}),
         }
