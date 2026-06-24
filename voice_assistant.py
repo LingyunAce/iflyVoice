@@ -68,7 +68,7 @@ class VAConfig:
     wake_word: str = "小爱同学"
     stt_url: str = "http://127.0.0.1:18766/sensevoice/transcribe"
     max_wake_listen: float = 30.0  # max seconds waiting for wake word
-    silence_timeout: float = 1.5  # seconds of silence to end command
+    silence_timeout: float = 0.7  # seconds of silence to end command (match voice_pipeline.py)
     max_command: float = 10.0  # max command recording seconds
     wake_check_interval: float = 0.5  # seconds between wake word checks
     mic_device: str = ""  # empty = default; int = device index
@@ -100,9 +100,9 @@ class VoiceAssistant:
         self.interrupted = False
         self._pending_wake_checks = 0  # counter for in-flight STT requests
 
-        # Audio buffer (deque of int16 numpy arrays)
-        self._audio_buffer: collections.deque[np.ndarray] = collections.deque()
-        self._command_buffer: collections.deque[np.ndarray] = collections.deque()
+        # Audio buffer — maxlen keeps only recent ~6s of 16kHz int16
+        self._audio_buffer: collections.deque[np.ndarray] = collections.deque(maxlen=190)
+        self._command_buffer: collections.deque[np.ndarray] = collections.deque(maxlen=190)
         self._buffer_start_time = 0.0
 
         # VAD
@@ -118,7 +118,8 @@ class VoiceAssistant:
         self._tts_process: subprocess.Popen | None = None
 
         # Session
-        self._session_id = f"voice-{int(time.time())}"
+        self._session_key = ""  # use default main session
+        self._wake_text = ""  # the text that triggered wake word detection
         self._llm_queue: queue.Queue[tuple[str, str]] = queue.Queue()
 
     # ── Audio Callback ────────────────────────────────────
@@ -134,13 +135,12 @@ class VoiceAssistant:
         self.running = True
         self.state = State.IDLE
 
-        mic_dev: int | None = 0  # default: ALSA hw:0,0 (ES8383 on RK3576)
+        mic_dev: int | None = 0  # ALSA hw:0,0 (ES8383 — only working mic on RK3576)
         if self.cfg.mic_device != "":
             try:
                 mic_dev = int(self.cfg.mic_device)
             except (ValueError, TypeError):
                 try:
-                    # Try string match
                     for d in sd.query_devices():
                         if self.cfg.mic_device in d["name"]:
                             mic_dev = d["index"]
@@ -222,18 +222,18 @@ class VoiceAssistant:
             elapsed = now - self._buffer_start_time
             silence_dur = now - self._last_speech_time
 
-            # Timeout? Pending STT blocks silence timeout
+            # Timeout? Pending STT blocks silence timeout (3s like voice_pipeline.py)
             if elapsed > self.cfg.max_wake_listen:
                 _log("Wake listen max time → IDLE")
                 self.state = State.IDLE
                 return
-            if silence_dur > 10.0 and self._pending_wake_checks == 0:
+            if silence_dur > 3.0 and self._pending_wake_checks == 0:
                 _log("Wake listen timeout → IDLE")
                 self.state = State.IDLE
                 return
 
             # Check wake word periodically (non-blocking: run in thread)
-            if elapsed >= 0.5 and elapsed - self._last_wake_check >= self.cfg.wake_check_interval:
+            if elapsed >= 0.8 and elapsed - self._last_wake_check >= self.cfg.wake_check_interval:
                 self._last_wake_check = now
                 import copy
                 buf_snapshot = copy.deepcopy(self._audio_buffer)
@@ -286,6 +286,7 @@ class VoiceAssistant:
             ww = self.cfg.wake_word
             if text.startswith(ww) or ww in text:
                 _log(f"*** WAKE WORD DETECTED: '{text}' ***")
+                self._wake_text = text  # save for command stripping
                 self.state = State.COMMAND_LISTEN
                 self._command_buffer.clear()
                 self._buffer_start_time = time.time()
@@ -297,6 +298,7 @@ class VoiceAssistant:
                     sub = ww[i : i + 2]
                     if sub in text:
                         _log(f"Wake word fuzzy match ({sub}) → COMMAND_LISTEN")
+                        self._wake_text = text  # save for command stripping
                         self.state = State.COMMAND_LISTEN
                         self._command_buffer.clear()
                         self._command_buffer.extend(self._audio_buffer)
@@ -316,10 +318,18 @@ class VoiceAssistant:
                 self.state = State.IDLE
                 return
 
-            # Strip wake word prefix
+            # Strip wake word from command (use both configured and actual detected text)
             ww = self.cfg.wake_word
-            if text.startswith(ww):
+            wt = self._wake_text  # e.g. "同学" instead of "小爱同学"
+            # Try stripping actual detected wake text first
+            if wt and wt in text:
+                idx = text.index(wt)
+                text = text[:idx] + text[idx + len(wt):]
+                text = text.strip()
+            elif text.startswith(ww):
                 text = text[len(ww):].strip()
+            # Remove leading punctuation
+            text = text.lstrip("，。！？,.!? ")
 
             _log(f"Command: '{text}'")
 
@@ -328,8 +338,10 @@ class VoiceAssistant:
             response = self._llm_chat(text)
 
             if response:
-                self.state = State.SPEAKING
-                self._tts_speak(response)
+                _log(f"Final response: {response}")
+                # TTS disabled — no speaker output on this board
+                # self.state = State.SPEAKING
+                # self._tts_speak(response)
 
             self.state = State.IDLE
         except Exception as e:
@@ -348,16 +360,31 @@ class VoiceAssistant:
             buf.clear()
             dur = len(audio) / self.cfg.sample_rate
 
-            if dur < 0.3:  # < 0.3s
+            if dur < 0.5:  # < 0.5s — too short for SenseVoiceSmall
                 _log(f"STT: too short ({dur:.1f}s), skipping")
                 return ""
 
-            # Save as WAV
-            wav_bytes = io.BytesIO()
-            self._save_wav_bytes(audio, wav_bytes)
-            wav_data = wav_bytes.getvalue()
+            # Convert to Opus WebM via ffmpeg (matches voice_pipeline.py — better STT accuracy)
+            pcm_data = audio.tobytes()
+            ffmpeg = subprocess.run(
+                ["ffmpeg", "-y", "-f", "s16le", "-ar", str(self.cfg.sample_rate),
+                 "-ac", "1", "-i", "pipe:0", "-c:a", "libopus", "-b:a", "32k",
+                 "-f", "webm", "pipe:1"],
+                input=pcm_data, capture_output=True, timeout=5,
+            )
+            if ffmpeg.returncode != 0 or len(ffmpeg.stdout) < 100:
+                _log(f"STT: ffmpeg failed, falling back to WAV")
+                wav_bytes = io.BytesIO()
+                self._save_wav_bytes(audio, wav_bytes)
+                stt_data = wav_bytes.getvalue()
+                filename = "audio.wav"
+                content_type = "audio/wav"
+            else:
+                stt_data = ffmpeg.stdout
+                filename = "audio.webm"
+                content_type = "audio/webm"
 
-            # Send WAV directly (SenseVoiceSmall accepts WAV)
+            # Send to STT
             import urllib.request
             import uuid
 
@@ -366,10 +393,10 @@ class VoiceAssistant:
             crlf = b"\r\n"
             parts = [
                 b"--" + boundary.encode(),
-                b'Content-Disposition: form-data; name="file"; filename="audio.wav"',
-                b"Content-Type: audio/wav",
+                f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode(),
+                f"Content-Type: {content_type}".encode(),
                 b"",
-                wav_data,
+                stt_data,
                 b"--" + boundary.encode() + b"--",
             ]
             body = crlf.join(parts)
@@ -401,20 +428,31 @@ class VoiceAssistant:
 
     # ── LLM (OpenClaw) ────────────────────────────────────
     def _llm_chat(self, text: str) -> str:
-        _log(f"LLM: sending to OpenClaw (session={self._session_id})")
+        _log(f"LLM: sending to OpenClaw (agent=main)")
         try:
             result = subprocess.run(
                 ["openclaw", "agent", "--agent", "main",
-                 "--session-id", self._session_id,
+                 "--json",
                  "--message", text],
                 capture_output=True, text=True, timeout=120,
-                env={**os.environ, "OPENCLAW_NO_COLOR": "1"},
+                env={
+                    **os.environ,
+                    "OPENCLAW_NO_COLOR": "1",
+                    "DISPLAY": "",         # suppress GUI windows
+                    "WAYLAND_DISPLAY": "",  # suppress Wayland windows
+                    "NO_AT_BRIDGE": "1",   # suppress accessibility bridge
+                },
             )
             output = result.stdout.strip()
-            # Filter status lines from OpenClaw
-            lines = [l for l in output.split("\n")
-                     if l.strip() and not l.startswith("[")]
-            response = "\n".join(lines).strip()
+            # Try JSON first (with --json flag)
+            try:
+                data = json.loads(output)
+                response = data.get("response", "") or data.get("text", "") or output
+            except (json.JSONDecodeError, TypeError):
+                # Plain text: filter status lines
+                lines = [l for l in output.split("\n")
+                         if l.strip() and not l.startswith("[")]
+                response = "\n".join(lines).strip()
             _log(f"LLM response: {response[:100]}...")
             return response
         except subprocess.TimeoutExpired:
