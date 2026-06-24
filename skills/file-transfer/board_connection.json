@@ -1,5 +1,5 @@
 ﻿{
-    "method":  "ssh",
+    "method":  "eth",
     "ip":  "192.168.1.207",
     "user":  "cat",
     "password":  "temppwd"

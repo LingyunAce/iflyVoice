@@ -19,14 +19,8 @@ function Test-BoardSSH($ip) {
     return ($tcp.TcpTestSucceeded -eq $true)
 }
 
-# 1. Try static ethernet IP
-if (Test-BoardSSH "192.168.1.207") {
-    Write-Host "[OK] ETH: 192.168.1.207"
-    @{method="eth"; ip="192.168.1.207"; user=$user; password=$password} | ConvertTo-Json | Out-File -Encoding UTF8 $outfile
-    exit 0
-}
-
-# 2. Find RNDIS adapter and scan its subnet dynamically
+# 1. USB RNDIS first — find adapter and scan subnet
+$usb_found = $false
 $rndis = Get-NetAdapter | Where-Object { $_.InterfaceDescription -match "RNDIS|Remote NDIS" -and $_.Status -eq "Up" }
 if ($rndis) {
     $rndis_ip = (Get-NetIPAddress -InterfaceIndex $rndis.ifIndex -AddressFamily IPv4).IPAddress
@@ -56,14 +50,21 @@ if ($rndis) {
     Write-Host "[RNDIS] Adapter found but no SSH response" -ForegroundColor Yellow
 }
 
-# 3. Fallback: scan common static IPs
-$fallback_ips = @("192.168.137.2", "169.254.184.100", "10.0.0.2")
-foreach ($ip in $fallback_ips) {
+# 2. USB static IP fallbacks
+$static_ips = @("169.254.184.100", "192.168.137.2", "10.0.0.2")
+foreach ($ip in $static_ips) {
     if (Test-BoardSSH $ip) {
-        Write-Host "[OK] Static: $ip"
+        Write-Host "[OK] USB static: $ip"
         @{method="usb"; ip=$ip; user=$user; password=$password} | ConvertTo-Json | Out-File -Encoding UTF8 $outfile
         exit 0
     }
+}
+
+# 3. Ethernet (last resort — requires network config)
+if (Test-BoardSSH "192.168.1.207") {
+    Write-Host "[OK] ETH: 192.168.1.207"
+    @{method="eth"; ip="192.168.1.207"; user=$user; password=$password} | ConvertTo-Json | Out-File -Encoding UTF8 $outfile
+    exit 0
 }
 
 # 4. Check for USB device without IP

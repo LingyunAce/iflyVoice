@@ -24,10 +24,10 @@ IP 不固定——通过自动检测获取。
 powershell -File "D:\AI\project\iflyVoice\skills\file-transfer\detect_board.ps1"
 ```
 
-脚本自动完成：
-- 试以太网固定 IP (192.168.1.207)
-- 找 RNDIS 网卡 → 取 Windows 侧 IP → 推导板子 IP（DHCP 或扫描 .2-.10）
-- 兜底扫常见静态 IP
+脚本自动完成（USB 优先）：
+- 找 RNDIS 网卡 → 推导板子 IP → 扫描 .2-.10
+- USB 静态 IP 兜底 (169.254.184.100 等)
+- 以太网最后尝试 (192.168.1.207)
 
 结果写入 `board_connection.json`，包含 `method`、`ip`、`user`、`password`。
 
