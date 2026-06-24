@@ -3,16 +3,11 @@ name: file-transfer
 description: "RK3576 板子 ↔ Windows 本机文件传输。USB RNDIS 优先（插线即用），以太网备用。"
 ---
 
-# 文件传输 — RK3576 ↔ Windows
+# 文件传输 — RK3576 → Windows
 
-**核心原则：PC 拉，不是板子推。**
-
-板子 SSH server 始终开着。PC 用 `pscp` 从板子下载文件，一行命令搞定。
-板子不需要往 PC 推——PC 不需要开任何端口或服务。不要自己发明 HTTP/FTP 方案。
-
-`pscp` 已在 Windows 本机安装（PuTTY 套件），板子的 SSH 端口 22 始终可用。
-
-即插即用，不要绕路。
+**背景**：OpenClaw 运行在 Linux 板子上，不能执行 Windows 命令（pscp/plink）。
+板子往 PC 推需要 PC 有 SSH server（大部分没有）。
+所以：**板子起 HTTP 服务 → PC 用浏览器/curl 下载**，这是板子侧唯一能做的事。
 
 ## 连接参数
 
@@ -74,20 +69,32 @@ plink -batch -pw temppwd -hostkey "%HK%" cat@192.168.1.207 "sudo dhclient usb0 2
 | `~/.openclaw/workspace/` | 项目文件 |
 | `~/iflyVoice/` | iflyVoice 代码 |
 
-## 直接执行（不要分析，照做）
+## 操作流程
 
-用户要求传输文件时，直接用 exec 执行以下命令。**不要解释、不要发明替代方案。**
+### 步骤 1：在板子上启动 HTTP 服务
 
-### 拷贝：板子 → PC
-
-```batch
-powershell -Command "if (Test-Connection 169.254.184.100 -Count 1 -Quiet) { $ip='169.254.184.100' } else { $ip='192.168.1.207' }; pscp -batch -pw temppwd -hostkey ""ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28"" cat@${ip}:.openclaw/canvas/<文件名> D:\AI\project\iflyVoice\downloads\"
+```bash
+cd ~/.openclaw/canvas && python3 -m http.server 8888 &
 ```
 
-### 列出文件
+### 步骤 2：告诉用户在 PC 上下载
 
-```batch
-plink -batch -pw temppwd -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100 "ls -la ~/.openclaw/canvas/; echo '---workspace---'; ls -p ~/.openclaw/workspace/ | grep -v '/$'"
+```
+文件已准备好，在 PC 浏览器或 PowerShell 中打开：
+http://169.254.184.100:8888/<文件名>
+（USB RNDIS 不通的话换 http://192.168.1.207:8888/）
+
+或 PowerShell 一行下载：
+Invoke-WebRequest http://169.254.184.100:8888/<文件名> -OutFile D:\<文件名>
 ```
 
-USB 不通自动切以太网。一行搞定。
+### 步骤 3：传输完成后关掉 HTTP 服务
+
+```bash
+pkill -f "http.server 8888"
+```
+
+## 板子 IP
+
+- USB RNDIS: `169.254.184.100`（插线即用）
+- 以太网: `192.168.1.207`
