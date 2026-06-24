@@ -22,8 +22,8 @@ if (Test-Connection -ComputerName $ssh_ip -Count 1 -Quiet 2>$null) {
     exit 0
 }
 
-# 2. Try USB gadget IPs
-$usb_ips = @("192.168.137.2", "192.168.137.1", "169.254.1.2", "10.0.0.2")
+# 2. Try USB RNDIS gadget IPs (169.254.x.x = link-local)
+$usb_ips = @("169.254.184.100", "192.168.137.2", "192.168.137.1", "169.254.1.2", "10.0.0.2")
 foreach ($ip in $usb_ips) {
     if (Test-Connection -ComputerName $ip -Count 1 -Quiet 2>$null) {
         Write-Host "[OK] USB: $ip"
