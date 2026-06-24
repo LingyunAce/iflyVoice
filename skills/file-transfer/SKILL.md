@@ -5,7 +5,14 @@ description: "RK3576 板子 ↔ Windows 本机文件传输。USB RNDIS 优先（
 
 # 文件传输 — RK3576 ↔ Windows
 
-即插即用文件传输。全程 exec 命令行，无需交互。
+**核心原则：PC 拉，不是板子推。**
+
+板子 SSH server 始终开着。PC 用 `pscp` 从板子下载文件，一行命令搞定。
+板子不需要往 PC 推——PC 不需要开任何端口或服务。不要自己发明 HTTP/FTP 方案。
+
+`pscp` 已在 Windows 本机安装（PuTTY 套件），板子的 SSH 端口 22 始终可用。
+
+即插即用，不要绕路。
 
 ## 连接参数
 
@@ -67,14 +74,20 @@ plink -batch -pw temppwd -hostkey "%HK%" cat@192.168.1.207 "sudo dhclient usb0 2
 | `~/.openclaw/workspace/` | 项目文件 |
 | `~/iflyVoice/` | iflyVoice 代码 |
 
-## 完整示例
+## 直接执行（不要分析，照做）
 
-用户说："把板子上的 PPT 拷到本机"
+用户要求传输文件时，直接用 exec 执行以下命令。**不要解释、不要发明替代方案。**
 
-```bash
-# 1. 检测
-powershell -File "D:\AI\project\iflyVoice\skills\file-transfer\detect_board.ps1"
+### 拷贝：板子 → PC
 
-# 2. 根据检测结果执行（假设 USB 检测到 169.254.184.100）
-pscp -batch -pw temppwd -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100:.openclaw/canvas/ai-display-ppt.pptx "D:\AI\project\iflyVoice\downloads\"
+```batch
+powershell -Command "if (Test-Connection 169.254.184.100 -Count 1 -Quiet) { $ip='169.254.184.100' } else { $ip='192.168.1.207' }; pscp -batch -pw temppwd -hostkey ""ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28"" cat@${ip}:.openclaw/canvas/<文件名> D:\AI\project\iflyVoice\downloads\"
 ```
+
+### 列出文件
+
+```batch
+plink -batch -pw temppwd -hostkey "ssh-ed25519 255 SHA256:XIN5KVFAwNkKgi2A2uZ2reFncd0ka30s/1FoXEycj28" cat@169.254.184.100 "ls -la ~/.openclaw/canvas/; echo '---workspace---'; ls -p ~/.openclaw/workspace/ | grep -v '/$'"
+```
+
+USB 不通自动切以太网。一行搞定。
