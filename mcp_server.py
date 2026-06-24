@@ -72,11 +72,11 @@ TOOLS = [
     },
     {
         "name": "set_input",
-        "description": "切换显示器输入源。可用代码: 0f=DisplayPort-1, 10=DisplayPort-2, 11=HDMI-1",
+        "description": "切换显示器输入源(DDC/CI双向可用)。代码: 0f=DP-1, 10=DP-2, 11=HDMI-1",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "code": {"type": "string", "description": "输入源 hex 代码"},
+                "code": {"type": "string", "description": "输入源 hex 代码 (0f/10/11)"},
             },
             "required": ["code"],
         },
