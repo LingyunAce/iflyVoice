@@ -8,8 +8,8 @@
 | `0x1E` | Auto setup | 自动设置 | 00 | -- | ro | `iflyvoice__vcp_read {"code": "1E"}` |
 | `0x20` | Horizontal Position (Phase | 水平位置 | 514 | 65535 | rw | `iflyvoice__vcp_write {"code": "20", "value": N}` |
 | `0x30` | Vertical Position (Phase | 垂直位置 | 514 | 65535 | rw | `iflyvoice__vcp_write {"code": "30", "value": N}` |
-| `0x60` | Input Source | 输入源选择 | 0f | -- | rw | `iflyvoice__set_input {"code": "0f"}  # 0f=DP-1, 11=HDMI-1` |
-| `0x62` | Audio speaker volume | 扬声器音量（0=静音, 100=最大） | 100 | -- | rw | `iflyvoice__display_config {"what": "volume", "value": N}` |
+| `0x60` | Input Source | 输入源选择 | 11 | -- | rw | `iflyvoice__set_input {"code": "0f"}  # 0f=DP-1, 11=HDMI-1` |
+| `0x62` | Audio speaker volume | 扬声器音量（AOC反的: 100=静音, 0=最大） | 100 | -- | rw | `iflyvoice__display_config {"what": "volume", "value": N}` |
 | `0x6C` | Video black level: Red | 视频黑电平(红) | 80 | 100 | rw | `iflyvoice__vcp_write {"code": "6C", "value": N}` |
 | `0x6E` | Video black level: Green | 视频黑电平(绿) | 80 | 100 | rw | `iflyvoice__vcp_write {"code": "6E", "value": N}` |
 | `0x70` | Video black level: Blue | 视频黑电平(蓝) | 80 | 100 | rw | `iflyvoice__vcp_write {"code": "70", "value": N}` |
