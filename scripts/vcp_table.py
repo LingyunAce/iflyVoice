@@ -2,6 +2,39 @@
 """Generate VCP code table with MCP commands for OpenClaw."""
 import subprocess, re
 
+# Chinese translations for VCP codes
+CN_NAME = {
+    0x02: "新控制值",
+    0x0C: "色温查询请求",
+    0x10: "亮度",
+    0x12: "对比度",
+    0x14: "色温预设",
+    0x16: "红色增益",
+    0x18: "绿色增益",
+    0x1A: "蓝色增益",
+    0x20: "水平位置",
+    0x52: "活动控制",
+    0x60: "输入源选择",
+    0x62: "扬声器音量",
+    0x6C: "视频黑电平(红)",
+    0x86: "缩放模式",
+    0x8D: "静音/息屏",
+    0xAC: "水平频率",
+    0xAE: "垂直频率",
+    0xB2: "子像素布局",
+    0xB6: "面板技术类型",
+    0xC6: "应用启用键",
+    0xC8: "显示控制器ID",
+    0xC9: "固件版本",
+    0xCA: "OSD/按键控制",
+    0xCC: "OSD语言",
+    0xD6: "电源模式",
+    0xDC: "显示场景模式",
+    0xDF: "VCP版本",
+    0xE2: "厂商自定义 E2",
+    0xF8: "厂商自定义 F8",
+}
+
 cap = subprocess.run(["sudo", "ddcutil", "capabilities"],
                      capture_output=True, text=True, timeout=10).stdout
 all_codes = set()
@@ -70,11 +103,12 @@ for code in sorted(all_codes):
     working.append((code, name, val, maxv, vtype, mcp))
 
 # Print markdown table
-print("| VCP | 功能 | 当前值 | 最大 | 类型 | OpenClaw MCP 命令 |")
-print("|-----|------|--------|------|------|-------------------|")
+print("| VCP | 功能 | 中文 | 当前值 | 最大 | 类型 | OpenClaw MCP 命令 |")
+print("|-----|------|------|--------|------|------|-------------------|")
 for code, name, val, maxv, vtype, mcp in working:
     code_str = f"`0x{code:02X}`"
-    print(f"| {code_str} | {name} | {val} | {maxv} | {vtype} | `{mcp}` |")
+    cn = CN_NAME.get(code, "")
+    print(f"| {code_str} | {name} | {cn} | {val} | {maxv} | {vtype} | `{mcp}` |")
 
 print()
 print(f"**共 {len(working)} 个可用 VCP 码**")
