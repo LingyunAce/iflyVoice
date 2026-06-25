@@ -6,7 +6,7 @@ CN = {
     0x10: "亮度", 0x12: "对比度", 0x14: "色温预设",
     0x16: "红色增益", 0x18: "绿色增益", 0x1A: "蓝色增益",
     0x1E: "自动设置", 0x20: "水平位置", 0x30: "垂直位置",
-    0x60: "输入源选择", 0x62: "扬声器音量",
+    0x60: "输入源选择", 0x62: "扬声器音量（0=静音, 100=最大）",
     0x6C: "视频黑电平(红)", 0x6E: "视频黑电平(绿)", 0x70: "视频黑电平(蓝)",
     0x86: "缩放模式", 0x87: "锐度", 0x8D: "静音/息屏",
     0xB2: "子像素布局", 0xB6: "面板技术类型", 0xC0: "累计使用时间",
@@ -40,9 +40,12 @@ for e in vesa['entries']:
         continue
     val_m = re.search(r'current value\s*=\s*(\d+)', out)
     sl_m = re.search(r'sl=0x(\w+)', out)
-    if not val_m and not sl_m:
+    level_m = re.search(r'(?:Volume level|level):\s*(\d+)', out, re.IGNORECASE)
+    if not val_m and not sl_m and not level_m:
         continue
-    val = val_m.group(1) if val_m else sl_m.group(1)
+    if val_m: val = val_m.group(1)
+    elif sl_m: val = sl_m.group(1)
+    else: val = level_m.group(1)
     max_m = re.search(r'max value\s*=\s*(\d+)', out)
     maxv = max_m.group(1) if max_m else '--'
 
