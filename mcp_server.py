@@ -213,12 +213,12 @@ TOOLS = [
     },
     {
         "name": "osd_control",
-        "description": "OSD 控制：锁定/解锁按键、切换语言、读取状态",
+        "description": "OSD 控制：lock=锁按键, unlock=解锁, set_lang=切换语言, read=读状态。全部语言码: 1=繁体中文 2=English 3=Francais 4=Deutsch 5=Italiano 6=日本語 7=한국어 9=Русский 10=Espanol 11=Svenska 12=Turkce 13=简体中文 18=Cestina 20=Nederlands 22=Suomi 30=Polski。禁止14(Portugues,导致DDC/CI掉线需断电重启)。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "action": {"type": "string", "description": "lock/unlock/set_lang/read"},
-                "code": {"type": "integer", "description": "语言代码 (set_lang 时): 2=English, 0x0d=简体中文"},
+                "code": {"type": "integer", "description": "语言码见工具描述"},
             },
             "required": ["action"],
         },
