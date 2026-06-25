@@ -324,13 +324,15 @@ class LocalExecutor(Executor):
                 "name": e["name"],
                 "description": e["description"],
                 "type": e["vcp_type"],
-                "category": e["category_name"],
+                "category": e.get("category_name") or e.get("category", ""),
             })
 
+        owner = data.get("owner_name") or data.get("owner", "VESA")
+        version = data.get("owner_version") or data.get("version", "")
         return {
             "ok": True,
             "data": {
-                "owner": f"{data['owner_name']} {data['owner_version']}",
+                "owner": f"{owner} {version}".strip(),
                 "total_matched": len(entries),
                 "entries": entries,
             },
