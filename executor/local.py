@@ -48,6 +48,16 @@ class LocalExecutor(Executor):
             return self._voice_control("start")
         if t == IntentType.VOICE_STOP:
             return self._voice_control("stop")
+        if t == IntentType.VCP_READ:
+            return self._vcp_read(intent)
+        if t == IntentType.VCP_WRITE:
+            return self._vcp_write(intent)
+        if t == IntentType.MONITOR_INFO:
+            return self._monitor_info(intent)
+        if t == IntentType.OSD_CONTROL:
+            return self._osd_control(intent)
+        if t == IntentType.DISPLAY_CONFIG:
+            return self._display_config(intent)
         if t == IntentType.BILIBILI_SEARCH:
             return {"ok": False, "err": "B 站搜索本期不支持", "code": "ERR_UNSUPPORTED"}
         return {"ok": False, "err": f"local_executor does not support {t.value}",
@@ -337,6 +347,108 @@ class LocalExecutor(Executor):
                 "entries": entries,
             },
         }
+
+    # ── Generic VCP ─────────────────────────────────────
+    @staticmethod
+    def _vcp_read(intent: Intent) -> dict:
+        vcp = intent.params.get("code", "")
+        if not vcp:
+            return {"ok": False, "err": "need 'code' param", "code": "ERR_BAD_REQUEST"}
+        try:
+            from linux.ddcci import vcp_read, is_ddc_available
+            if is_ddc_available():
+                r = vcp_read(vcp)
+                if r:
+                    return {"ok": True, "data": r}
+        except Exception:
+            pass
+        return {"ok": False, "err": f"VCP {vcp} unavailable", "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _vcp_write(intent: Intent) -> dict:
+        vcp = intent.params.get("code", "")
+        val = intent.params.get("value", 0)
+        if not vcp:
+            return {"ok": False, "err": "need 'code' + 'value'", "code": "ERR_BAD_REQUEST"}
+        try:
+            from linux.ddcci import vcp_write, is_ddc_available
+            if is_ddc_available():
+                ok = vcp_write(vcp, int(val))
+                if ok:
+                    return {"ok": True, "data": {"code": vcp, "value": int(val)}}
+        except Exception:
+            pass
+        return {"ok": False, "err": f"VCP {vcp} write failed", "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _monitor_info(intent: Intent) -> dict:
+        try:
+            from linux.ddcci import get_monitor_info, is_ddc_available
+            if is_ddc_available():
+                return {"ok": True, "data": get_monitor_info()}
+        except Exception:
+            pass
+        return {"ok": False, "err": "monitor info unavailable", "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _osd_control(intent: Intent) -> dict:
+        action = intent.params.get("action", "read")
+        try:
+            from linux.ddcci import vcp_read, vcp_write, set_osd_language, get_osd_language
+            if action == "lock":
+                ok = vcp_write("0xCA", 2)
+            elif action == "unlock":
+                ok = vcp_write("0xCA", 1)
+            elif action == "set_lang":
+                ok = set_osd_language(int(intent.params.get("code", 2)))
+            elif action == "read":
+                r = vcp_read("0xCA")
+                lang = get_osd_language()
+                return {"ok": True, "data": {"osd": r, "language": lang}}
+            else:
+                return {"ok": False, "err": f"unknown action: {action}"}
+            if ok:
+                return {"ok": True, "data": {"action": action}}
+        except Exception as e:
+            pass
+        return {"ok": False, "err": "OSD control failed", "code": "ERR_LOCAL_DISPLAY"}
+
+    @staticmethod
+    def _display_config(intent: Intent) -> dict:
+        what = intent.params.get("what", "read")
+        try:
+            from linux.ddcci import (set_display_scaling, get_display_scaling,
+                                      set_audio_mute, get_audio_mute,
+                                      set_display_mode, get_display_mode, vcp_read, vcp_write)
+            if what == "scaling":
+                val = intent.params.get("value")
+                if val is not None:
+                    return {"ok": set_display_scaling(int(val)), "data": {"scaling": int(val)}}
+                r = get_display_scaling()
+                return {"ok": bool(r), "data": r or {}}
+            elif what == "mute":
+                mute = intent.params.get("mute", True)
+                blank = intent.params.get("blank", False)
+                if "mute" in intent.params:
+                    ok = set_audio_mute(mute, blank)
+                    return {"ok": ok, "data": {"mute": mute, "blank": blank}}
+                r = get_audio_mute()
+                return {"ok": bool(r), "data": r or {}}
+            elif what == "mode":
+                val = intent.params.get("value")
+                if val is not None:
+                    return {"ok": set_display_mode(int(val)), "data": {"mode": int(val)}}
+                r = get_display_mode()
+                return {"ok": bool(r), "data": r or {}}
+            elif what == "volume":
+                val = intent.params.get("value")
+                if val is not None:
+                    return {"ok": vcp_write("0x62", int(val)), "data": {"volume": int(val)}}
+                r = vcp_read("0x62")
+                return {"ok": bool(r), "data": r or {}}
+            return {"ok": False, "err": f"unknown: {what}"}
+        except Exception as e:
+            return {"ok": False, "err": str(e), "code": "ERR_LOCAL_DISPLAY"}
 
     # ── Voice Assistant Control ─────────────────────────
     @staticmethod

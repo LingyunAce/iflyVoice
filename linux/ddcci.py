@@ -181,6 +181,91 @@ def get_power_mode() -> Optional[str]:
     return modes.get(code, f"unknown({code})")
 
 
+def vcp_read(vcp_hex: str) -> dict | None:
+    """Generic VCP read — returns {'current': int, 'max': int, 'name': str} or None."""
+    rc, out = _run_ddc("getvcp", vcp_hex)
+    if rc != 0:
+        return None
+    cur = re.search(r"current value\s*=\s*(\d+)", out)
+    mx = re.search(r"max value\s*=\s*(\d+)", out)
+    name = re.search(r"\(([^)]+)\)", out)
+    sl = re.search(r"sl=0x(\w+)", out)
+    return {
+        "current": int(cur.group(1)) if cur else (int(sl.group(1), 16) if sl else None),
+        "max": int(mx.group(1)) if mx else None,
+        "name": name.group(1).strip() if name else "",
+    }
+
+
+def vcp_write(vcp_hex: str, value: int) -> bool:
+    """Generic VCP write — returns success."""
+    rc, _ = _run_ddc("setvcp", vcp_hex, str(value))
+    return rc == 0
+
+
+# ── Monitor Settings ──────────────────────────────────────────
+
+def set_osd_language(code: int) -> bool:
+    """Set OSD language via VCP 0xCC (e.g. 2=English, 0x0d=Simplified Chinese)."""
+    return vcp_write("0xCC", code)
+
+
+def get_osd_language() -> dict | None:
+    return vcp_read("0xCC")
+
+
+def set_display_scaling(mode: int) -> bool:
+    """Set display scaling via VCP 0x86 (1=No scaling, 2=Max image, 5=Max vertical)."""
+    return vcp_write("0x86", mode)
+
+
+def get_display_scaling() -> dict | None:
+    return vcp_read("0x86")
+
+
+def set_audio_mute(mute: bool, blank_screen: bool = False) -> bool:
+    """Set audio mute / screen blank via VCP 0x8D.
+    mute=True, blank=False → mute audio only
+    mute=True, blank=True → mute + blank screen
+    mute=False → unmute all
+    """
+    if mute and blank_screen:
+        val = 3  # both
+    elif mute:
+        val = 2  # audio mute only
+    else:
+        val = 1  # no mute
+    return vcp_write("0x8D", val)
+
+
+def get_audio_mute() -> dict | None:
+    return vcp_read("0x8D")
+
+
+def set_display_mode(mode: int) -> bool:
+    """Set display application mode via VCP 0xDC (0=Standard, others vary by monitor)."""
+    return vcp_write("0xDC", mode)
+
+
+def get_display_mode() -> dict | None:
+    return vcp_read("0xDC")
+
+
+def get_monitor_info() -> dict:
+    """Read monitor identification info (VCP 0xC8, 0xC9, 0xDF, 0xB2, 0xB6, 0xAC, 0xAE)."""
+    info = {}
+    for vcp, key in [("0xC8", "controller_id"), ("0xC9", "firmware"),
+                     ("0xDF", "vcp_version"), ("0xB2", "subpixel"),
+                     ("0xB6", "tech_type"), ("0xAC", "h_freq"),
+                     ("0xAE", "v_freq")]:
+        r = vcp_read(vcp)
+        if r and r["current"] is not None:
+            info[key] = r
+    return info
+
+
+# ── Power ─────────────────────────────────────────────────────
+
 def set_power_mode(on: bool) -> bool:
     """Set power mode: True=on, False=off via DDC/CI VCP 0xD6."""
     val = "1" if on else "4"

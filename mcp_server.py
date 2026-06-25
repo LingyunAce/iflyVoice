@@ -149,6 +149,60 @@ TOOLS = [
         },
     },
     {
+        "name": "vcp_read",
+        "description": "读取任意 DDC/CI VCP 码的当前值（支持全部 29 个可用码）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "VCP 码 hex，如 '10'=亮度, '60'=输入源, 'D6'=电源"},
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "vcp_write",
+        "description": "写入任意 DDC/CI VCP 码（支持全部可写 VCP 码）",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "VCP 码 hex"},
+                "value": {"type": "integer", "description": "写入值"},
+            },
+            "required": ["code", "value"],
+        },
+    },
+    {
+        "name": "monitor_info",
+        "description": "读取显示器信息：型号、固件版本、VCP 版本、面板类型、当前频率",
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "display_config",
+        "description": "显示器配置：缩放模式(scaling)、静音/息屏(mute)、显示模式(mode)、扬声器音量(volume)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "what": {"type": "string", "description": "scaling/mute/mode/volume"},
+                "value": {"type": "integer", "description": "设置值（省略则为读取）"},
+                "mute": {"type": "boolean", "description": "mute 操作: 是否静音"},
+                "blank": {"type": "boolean", "description": "mute 操作: 是否息屏"},
+            },
+            "required": ["what"],
+        },
+    },
+    {
+        "name": "osd_control",
+        "description": "OSD 控制：锁定/解锁按键、切换语言、读取状态",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "lock/unlock/set_lang/read"},
+                "code": {"type": "integer", "description": "语言代码 (set_lang 时): 2=English, 0x0d=简体中文"},
+            },
+            "required": ["action"],
+        },
+    },
+    {
         "name": "stt_transcribe",
         "description": "语音转文字 (SenseVoiceSmall)。上传音频文件路径进行识别。",
         "inputSchema": {

@@ -43,6 +43,13 @@ class IntentType(str, Enum):
     VOICE_START = "voice_start"
     VOICE_STOP = "voice_stop"
 
+    # 通用 VCP 读写
+    VCP_READ = "vcp_read"
+    VCP_WRITE = "vcp_write"
+    MONITOR_INFO = "monitor_info"
+    OSD_CONTROL = "osd_control"
+    DISPLAY_CONFIG = "display_config"
+
     # 无意图（普通对话）
     NONE = "none"
 
