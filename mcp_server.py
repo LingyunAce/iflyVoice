@@ -177,8 +177,29 @@ TOOLS = [
         "inputSchema": {"type": "object", "properties": {}},
     },
     {
+        "name": "monitor_volume",
+        "description": "设置/读取显示器自带扬声器音量 (DDC/CI VCP 0x62)。0=静音, 100=最大。用这个不要用 set_volume。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "value": {"type": "integer", "description": "音量值 0-100，0=静音 100=最大"},
+            },
+        },
+    },
+    {
+        "name": "monitor_mute",
+        "description": "静音/取消静音显示器自带扬声器。直接切换开关，不传数值。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "mute": {"type": "boolean", "description": "true=静音, false=取消静音"},
+            },
+            "required": ["mute"],
+        },
+    },
+    {
         "name": "display_config",
-        "description": "显示器配置：缩放模式(scaling)、静音/息屏(mute)、显示模式(mode)、扬声器音量(volume)。注意AOC音量反的: 100=静音, 0=最大",
+        "description": "显示器配置：缩放模式(scaling)、显示模式(mode)、扬声器音量(volume)。标准语义: 0=静音, 100=最大",
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -271,8 +292,16 @@ def handle_request(req: dict) -> dict | None:
     if method == "tools/call":
         tool_name = req["params"]["name"]
         arguments = req["params"].get("arguments", {})
-        # Map tool name to iflyVoice endpoint
-        result = call_iflyvoice(tool_name, arguments)
+        # Route aliased tools to correct iflyVoice endpoints
+        alias_map = {
+            "monitor_volume": ("display_config", {"what": "volume", "value": arguments.get("value")}),
+            "monitor_mute": ("display_config", {"what": "volume", "value": 0 if arguments.get("mute") else 100}),
+        }
+        if tool_name in alias_map:
+            endpoint, mapped_args = alias_map[tool_name]
+            result = call_iflyvoice(endpoint, mapped_args)
+        else:
+            result = call_iflyvoice(tool_name, arguments)
         return {
             "jsonrpc": "2.0", "id": rid,
             "result": {"content": [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]},
