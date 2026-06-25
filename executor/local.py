@@ -396,9 +396,9 @@ class LocalExecutor(Executor):
         try:
             from linux.ddcci import vcp_read, vcp_write, set_osd_language, get_osd_language
             if action == "lock":
-                ok = vcp_write("0xCA", 2)
+                ok = vcp_write("0xCA", 1)  # AOC: 1=OSD disabled
             elif action == "unlock":
-                ok = vcp_write("0xCA", 1)
+                ok = vcp_write("0xCA", 2)  # AOC: 2=OSD enabled
             elif action == "set_lang":
                 ok = set_osd_language(int(intent.params.get("code", 2)))
             elif action == "read":
