@@ -428,10 +428,9 @@ class LocalExecutor(Executor):
                 return {"ok": bool(r), "data": r or {}}
             elif what == "mute":
                 mute = intent.params.get("mute", True)
-                blank = intent.params.get("blank", False)
                 if "mute" in intent.params:
-                    ok = set_audio_mute(mute, blank)
-                    return {"ok": ok, "data": {"mute": mute, "blank": blank}}
+                    ok = set_audio_mute(bool(mute))
+                    return {"ok": ok, "data": {"mute": bool(mute)}}
                 r = get_audio_mute()
                 return {"ok": bool(r), "data": r or {}}
             elif what == "mode":

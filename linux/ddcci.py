@@ -223,18 +223,9 @@ def get_display_scaling() -> dict | None:
     return vcp_read("0x86")
 
 
-def set_audio_mute(mute: bool, blank_screen: bool = False) -> bool:
-    """Set audio mute / screen blank via VCP 0x8D.
-    mute=True, blank=False → mute audio only
-    mute=True, blank=True → mute + blank screen
-    mute=False → unmute all
-    """
-    if mute and blank_screen:
-        val = 3  # both
-    elif mute:
-        val = 2  # audio mute only
-    else:
-        val = 1  # no mute
+def set_audio_mute(mute: bool) -> bool:
+    """Set audio mute via VCP 0x8D. 1=mute, 2=unmute. Returns previous volume on unmute."""
+    val = 1 if mute else 2
     return vcp_write("0x8D", val)
 
 
