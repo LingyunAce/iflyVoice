@@ -77,7 +77,6 @@ WebDDCUtil API 结构变化：`category_name`/`category_id`/`custom_data` 移除
 | `westockdata` | workbuddy | A股/港股/美股行情 |
 | `aihot` | workbuddy | AI 中文资讯 |
 | `tencent-news` | workbuddy skill | 7×24 新闻搜索 |
-| `neodata-financial-search` | workbuddy skill_2053083392235933696 | 金融数据搜索 |
 
 ## 今日提交（15 个 commit）
 
