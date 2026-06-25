@@ -198,8 +198,13 @@ def vcp_read(vcp_hex: str) -> dict | None:
 
 
 def vcp_write(vcp_hex: str, value: int) -> bool:
-    """Generic VCP write — returns success."""
+    """Generic VCP write — returns success. Auto-retries once if DDC/CI lost."""
     rc, _ = _run_ddc("setvcp", vcp_hex, str(value))
+    if rc != 0:
+        # Retry once after brief delay (DDC/CI bus recovery)
+        import time
+        time.sleep(0.5)
+        rc, _ = _run_ddc("setvcp", vcp_hex, str(value))
     return rc == 0
 
 
