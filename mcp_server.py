@@ -295,7 +295,7 @@ def handle_request(req: dict) -> dict | None:
         # Route aliased tools to correct iflyVoice endpoints
         alias_map = {
             "monitor_volume": ("display_config", {"what": "volume", "value": arguments.get("value")}),
-            "monitor_mute": ("display_config", {"what": "volume", "value": 0 if arguments.get("mute") else 100}),
+            "monitor_mute": ("display_config", {"what": "volume", "value": 100 if arguments.get("mute") else 0}),
         }
         if tool_name in alias_map:
             endpoint, mapped_args = alias_map[tool_name]
