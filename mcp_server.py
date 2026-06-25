@@ -178,7 +178,7 @@ TOOLS = [
     },
     {
         "name": "display_config",
-        "description": "显示器配置：缩放模式(scaling)、静音/息屏(mute)、显示模式(mode)、扬声器音量(volume)",
+        "description": "显示器配置：缩放模式(scaling)、静音/息屏(mute)、显示模式(mode)、扬声器音量(volume)。注意AOC音量反的: 100=静音, 0=最大",
         "inputSchema": {
             "type": "object",
             "properties": {
