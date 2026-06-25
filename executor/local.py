@@ -443,8 +443,14 @@ class LocalExecutor(Executor):
             elif what == "volume":
                 val = intent.params.get("value")
                 if val is not None:
-                    return {"ok": vcp_write("0x62", int(val)), "data": {"volume": int(val)}}
+                    # AOC reversal: VESA 0=mute 100=max, AOC is 100=mute 0=max
+                    aoc_val = 100 - int(val)
+                    return {"ok": vcp_write("0x62", aoc_val),
+                            "data": {"volume": int(val), "aoc_raw": aoc_val, "note": "AOC reversed"}}
                 r = vcp_read("0x62")
+                if r and r.get("current") is not None:
+                    r["volume"] = 100 - r["current"]  # normalized back
+                    r["note"] = "AOC reversed"
                 return {"ok": bool(r), "data": r or {}}
             return {"ok": False, "err": f"unknown: {what}"}
         except Exception as e:
