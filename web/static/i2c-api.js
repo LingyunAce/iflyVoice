@@ -1,0 +1,341 @@
+/**
+ * i2c-api.js — DDC/CI 显示器 I2C 控制模块
+ * 
+ * 通过 ADB shell + i2cset 命令控制显示器参数（亮度、对比度、输入源等）
+ * 
+ * DDC/CI 协议格式：
+ *   i2cset -y -f <bus> <slave_addr> <MAGIC1> <MAGIC2> <opcode> <vcp_code> <val_hi> <val_lo> <checksum> i
+ * 
+ * Checksum 算法：XOR 累加
+ *   初始值 = (slave_addr << 1)
+ *   依次 ^= MAGIC1 ^ MAGIC2 ^ opcode ^ vcp_code ^ val_hi ^ val_lo
+ */
+
+const I2C_CONFIG = {
+    // ADB 设备配置
+    adbPath: 'adb',                    // adb 可执行文件路径（需要 PATH 中能找到）
+    apiPrefix: '/i2c',                 // 后端代理路由前缀
+
+    // I2C 总线 & 从机地址
+    bus: 1,                            // I2C 总线编号
+    slaveAddr: 0x37,                   // DDC/CI 从机地址
+
+    // DDC/CI 固定头
+    MAGIC1: 0x51,
+
+    // VCP Code 映射表
+    VCP_CODES: {
+        brightness:  0x10,             // 亮度 (0-100)
+        contrast:    0x12,             // 对比度 (0-100)
+        redGain:     0x13,             // 红色增益 (0-100)
+        greenGain:   0x14,             // 绿色增益 (0-100)
+        blueGain:    0x15,             // 蓝色增益 (0-100)
+        colorTemp:   0x0B,             // 色温 (某些显示器支持)
+        inputSource: 0x60,             // 输入源切换
+        powerMode:   0xD6,             // 电源控制
+        sceneMode:   0x52,             // 场景模式
+    },
+
+    // 输入源值映射
+    INPUT_SOURCE: {
+        DP:    0x11,
+        HDMI:  0x12,
+        VGA:   0x15,
+        TYPEC: 0x1F,
+    },
+
+    // 电源控制值
+    POWER_MODE: {
+        ON:  0x01,
+        OFF: 0x06,
+    },
+};
+
+
+/**
+ * 计算 DDC/CI XOR 校验和
+ * @param {number} slaveAddr - 从机地址 (如 0x37)
+ * @param {number[]} dataBytes - 数据字节序列 [MAGIC1, MAGIC2, opcode, vcpCode, valHi, valLo]
+ * @returns {number} checksum 字节 (0x00-0xFF)
+ */
+function calcChecksum(slaveAddr, dataBytes) {
+    let xor = (slaveAddr << 1) & 0xFF;
+    for (const b of dataBytes) {
+        xor ^= b;
+    }
+    return xor;
+}
+
+
+/**
+ * 构建 DDC/CI 写命令的完整字节数组
+ * @param {number} vcpCode - VCP 控制码 (如 0x10=亮度)
+ * @param {number} value - 控制值 (如 50 表示亮度50%)
+ * @returns {{bytes: number[], cmdStr: string}} 字节数组和可读的 i2cset 命令字符串
+ */
+function buildDdcCiCommand(vcpCode, value) {
+    const val = Math.max(0, Math.min(100, Math.round(value))); // 限制 0-100
+    const valHi = (val >> 8) & 0xFF;  // 高字节（0-100 范围内总是 0）
+    const valLo = val & 0xFF;          // 低字节
+
+    const dataLen = 4;  // opcode(1) + vcpCode(1) + valHi(1) + valLo(1)
+    const magic2 = 0x80 | dataLen;
+
+    const dataBytes = [
+        I2C_CONFIG.MAGIC1,      // 0x51
+        magic2,                  // 0x80 | length = 0x84
+        0x03,                    // Write opcode
+        vcpCode,                 // VCP code
+        valHi,                   // value high byte
+        valLo,                   // value low byte
+    ];
+
+    const checksum = calcChecksum(I2C_CONFIG.slaveAddr, dataBytes);
+
+    const bytes = [I2C_CONFIG.slaveAddr, ...dataBytes, checksum];
+
+    // 构建可显示的命令字符串（每个字节统一 2 位 hex + 0x 前缀）
+    const toHex = (b) => ('0' + b.toString(16).toUpperCase()).slice(-2);
+    const hexParts = bytes.map(b => '0x' + toHex(b));
+    const cmdStr = `i2cset -y -f ${I2C_CONFIG.bus} ${hexParts.join(' ')} i`;
+
+    return { bytes, cmdStr, toHex };
+}
+
+
+class I2cController {
+    constructor() {
+        this.connected = false;       // ADB 是否已连接
+        this.lastCommand = null;      // 最近一次执行的命令
+        this.onStatusChange = null;   // 状态变化回调
+    }
+
+    /**
+     * 检测 ADB 连接状态
+     */
+    async checkConnection() {
+        try {
+            const resp = await fetch(`${I2C_CONFIG.apiPrefix}/adb/status`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' },
+            });
+            const data = await resp.json();
+            this.connected = data.connected === true;
+            if (this.onStatusChange) {
+                this.onStatusChange(this.connected ? 'connected' : 'disconnected', data);
+            }
+            return data;
+        } catch (e) {
+            this.connected = false;
+            if (this.onStatusChange) {
+                this.onStatusChange('error', { error: e.message });
+            }
+            throw e;
+        }
+    }
+
+    /**
+     * 发送 DDC/CI 写命令到显示器
+     * @param {string} controlName - 控制名称 ('brightness', 'contrast' 等)
+     * @param {number} value - 目标值 (通常 0-100)
+     * @returns {Promise<object>} 执行结果
+     */
+    async setControl(controlName, value) {
+        const vcpCode = I2C_CONFIG.VCP_CODES[controlName];
+        if (vcpCode === undefined) {
+            throw new Error(`未知的控制项: ${controlName}`);
+        }
+
+        const { bytes, cmdStr, toHex } = buildDdcCiCommand(vcpCode, value);
+
+        this.lastCommand = { controlName, value, vcpCode, bytes, cmdStr };
+
+        try {
+            const resp = await fetch(`${I2C_CONFIG.apiPrefix}/i2cset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    command: 'i2cset',
+                    args: ['-y', '-f', String(I2C_CONFIG.bus),
+                        ...bytes.map(b => '0x' + toHex(b)),
+                        'i'],
+                }),
+            });
+
+            const result = await resp.json();
+            if (!result.success) {
+                throw new Error(result.error || 'i2cset 执行失败');
+            }
+            return result;
+        } catch (e) {
+            console.error('[I2C] 控制失败:', e);
+            throw e;
+        }
+    }
+
+    /**
+     * 快捷方法：设置亮度
+     * @param {number} brightness - 亮度值 0-100
+     */
+    async setBrightness(brightness) {
+        return this.setControl('brightness', brightness);
+    }
+
+    /**
+     * 快捷方法：设置对比度
+     * @param {number} contrast - 对比度值 0-100
+     */
+    async setContrast(contrast) {
+        return this.setControl('contrast', contrast);
+    }
+
+    /**
+     * 快捷方法：设置色温（部分显示器支持 VCP 0x0B）
+     * 范围 0-100：0=最暖(2700K)，100=最冷(6500K)
+     * @param {number} temp - 色温值 0-100
+     */
+    async setColorTemp(temp) {
+        return this.setControl('colorTemp', temp);
+    }
+
+    /**
+     * 解析语音指令中的控制意图
+     * 支持的指令格式示例:
+     *   "把亮度调到50" / "亮度调高一点" / "屏幕亮一点" / "对比度设为70"
+     *   "把屏幕关掉" / "打开显示器"
+     * @param {string} text - 识别出的文本
+     * @returns {{action: string, control: string, value: number|null}|null}
+     */
+    parseVoiceCommand(text) {
+        if (!text) return null;
+
+        const t = text.toLowerCase();
+
+        // ── 亮度相关 ──
+        // 支持: "亮度调到50" "亮度调成10%" "把亮度调成20" "亮度设为30" "亮度:40" "亮度 50"
+        let brightnessMatch =
+            t.match(/亮度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?亮度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:亮度|屏幕)\s*[:：]?\s*(\d{1,3})%?/);
+
+        if (brightnessMatch) {
+            return {
+                action: 'set',
+                control: 'brightness',
+                value: parseInt(brightnessMatch[1], 10),
+            };
+        }
+
+        // 亮度极值指令：最高/最亮 → 100%，最低/最暗 → 0%
+        // 注意：必须含"最"字，排除"调高/调低"等模糊指令
+        if (/(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大|最亮|full)/.test(t)) {
+            return { action: 'set', control: 'brightness', value: 100 };
+        }
+        if (/(?:亮度|屏幕)\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小|最暗)/.test(t)) {
+            return { action: 'set', control: 'brightness', value: 0 };
+        }
+
+        // 亮度模糊指令（需含亮度/屏幕/显示器关键字）
+        if (/(?:亮度|屏幕|显示器).*(?:增高|调高|提高|升高|增加|加大|亮一点|更亮|变亮|再亮点|稍微亮点|亮一些|稍亮点|调亮一点)/i.test(t)) {
+            return { action: 'adjust', control: 'brightness', delta: +10 };
+        }
+        if (/(?:亮度|屏幕|显示器).*(?:调低|降低|减小|减弱|减少|暗一点|更暗|变暗|再暗点|稍微暗点|暗一些|稍暗点|调暗一点)/i.test(t)) {
+            return { action: 'adjust', control: 'brightness', delta: -10 };
+        }
+
+        // ── 对比度相关 ──
+        let contrastMatch =
+            t.match(/对比度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?对比度\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/);
+
+        if (contrastMatch) {
+            return {
+                action: 'set',
+                control: 'contrast',
+                value: parseInt(contrastMatch[1], 10),
+            };
+        }
+
+        // 对比度极值指令（必须含"最"字）
+        if (/(?:对比度)\s*(?:调|设)?(?:成|为|到)?\s*(?:最高|最大)/.test(t)) {
+            return { action: 'set', control: 'contrast', value: 100 };
+        }
+        if (/(?:对比度)\s*(?:调|设)?(?:成|为|到)?\s*(?:最低|最小)/.test(t)) {
+            return { action: 'set', control: 'contrast', value: 0 };
+        }
+
+        // 对比度模糊指令（需含对比度关键字）
+        if (/对比度.*(?:增高|调高|提高|升高|增加|加大|增大|调大|高一点|高一些|对比度增大|对比度加大)/i.test(t)) {
+            return { action: 'adjust', control: 'contrast', delta: +10 };
+        }
+        if (/对比度.*(?:调低|降低|减小|减弱|减少|低一点|低一些|对比度减小|对比度降低|对比度减弱)/i.test(t)) {
+            return { action: 'adjust', control: 'contrast', delta: -10 };
+        }
+
+        // ── 色温相关 ──
+        // 支持: "色温调到50" "色温50" "把色温设成60"
+        let colorTempMatch =
+            t.match(/色温\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?色温\s*(?:调|设)(?:成|为|到|整?到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:色温)\s*(\d{1,3})/);
+
+        if (colorTempMatch) {
+            return {
+                action: 'set',
+                control: 'colorTemp',
+                value: parseInt(colorTempMatch[1], 10),
+            };
+        }
+
+        // 色温极值
+        if (/色温.*(?:最高|最冷)/.test(t)) {
+            return { action: 'set', control: 'colorTemp', value: 100 };
+        }
+        if (/色温.*(?:最低|最暖|暖一点|偏黄)/.test(t)) {
+            return { action: 'set', control: 'colorTemp', value: 0 };
+        }
+
+        // 色温模糊指令：调高/提高/升高/降低/减弱/冷一点/暖一点 等表述
+        if (/色温.*(?:调高|提高|升高|增强)|更冷|偏蓝|冷一点/.test(t)) {
+            return { action: 'adjust', control: 'colorTemp', delta: +10 };
+        }
+        if (/色温.*(?:调低|降低|减小|减弱)|更暖|偏黄|暖一点/.test(t)) {
+            return { action: 'adjust', control: 'colorTemp', delta: -10 };
+        }
+
+        // ── 电源控制 ──
+
+        if (/打开?(?:显示器|屏幕)|开启?(?:显示器|屏幕)|唤醒/.test(t)) {
+            return { action: 'set', control: 'powerMode', value: 0x01 };  // ON
+        }
+
+        // ── 音量相关 ──
+        let volumeMatch =
+            t.match(/音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?/) ||
+            t.match(/(?:把\s*)?音量\s*(?:调|设)(?:成|为|到)?\s*(\d{1,3})%?/);
+        if (volumeMatch) {
+            return { action: 'set', control: 'volume', value: parseInt(volumeMatch[1], 10) };
+        }
+        if (/音量.*(?:最高|最大|全开)/.test(t)) {
+            return { action: 'set', control: 'volume', value: 100 };
+        }
+        if (/(?:静音|mute)/i.test(t) || /音量.*(?:最低|最小|关掉)/.test(t)) {
+            return { action: 'set', control: 'volume', value: 0 };
+        }
+        if (/音量.*(?:增高|调高|提高|升高|增加|加大|大一点|大声点|声音大点|声音大一些|音量增大|声音变大|增大|变大)|声音(?:大一点|大些|变大)/i.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: +10 };
+        }
+        if (/音量.*(?:调低|降低|减小|减弱|减少|小一点|小声点|声音小点|声音小一些|音量减小|声音变小|减小|变小)|声音(?:小一点|小些|变小|减少|减小)/i.test(t)) {
+            return { action: 'adjust', control: 'volume', delta: -10 };
+        }
+
+        return null;
+    }
+}
+
+
+// 挂到全局
+window.I2cController = I2cController;
+window.I2C_CONFIG = I2C_CONFIG;
+window.buildDdcCiCommand = buildDdcCiCommand;
+window.calcChecksum = calcChecksum;

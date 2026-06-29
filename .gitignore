@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Build artifacts
+build_widget/
+dist/
+*.egg-info/
+
+# Runtime
+*.log
+.native_state.json
+
+# Dead/empty experiment directories
+reshade_inject/
+
+# IDE
+.vscode/
+.idea/
+.board_creds
+
+# Large model files (use git-lfs or download separately)
+models/SenseVoiceSmall/model.pt
+models/SenseVoiceSmall/onnx/model.onnx
+models/sensevoice_small.rknn
+downloads/
+*.bak
